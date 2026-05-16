@@ -5,10 +5,7 @@ class HandController : public rclcpp::Node {
 public:
     HandController() : Node("hand_controller") {
 
-        sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
-            "/hand/joints", 10,
-            std::bind(&HandController::callback, this, std::placeholders::_1)
-        );
+        sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>("/hand/joints", 10, std::bind(&HandController::callback, this, std::placeholders::_1));
 
         RCLCPP_INFO(this->get_logger(), "Hand Controller Started");
     }

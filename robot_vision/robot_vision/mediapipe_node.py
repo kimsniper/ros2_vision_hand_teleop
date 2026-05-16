@@ -17,38 +17,19 @@ class MediaPipeNode(Node):
 
         super().__init__('mediapipe_node')
 
-        self.publisher_ = self.create_publisher(
-            Float64MultiArray,
-            '/hand/landmarks',
-            10
-        )
+        self.publisher_ = self.create_publisher(Float64MultiArray, '/hand/landmarks', 10)
 
         self.cap = cv2.VideoCapture(0)
 
         self.mp_hands = mp.solutions.hands
 
-        self.hands = self.mp_hands.Hands(
-
-            static_image_mode=False,
-
-            max_num_hands=1,
-
-            min_detection_confidence=0.5,
-
-            min_tracking_confidence=0.5
-
-        )
+        self.hands = self.mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
         self.mp_draw = mp.solutions.drawing_utils
 
-        self.timer = self.create_timer(
-            0.03,
-            self.update
-        )
+        self.timer = self.create_timer(0.03, self.update)
 
-        self.get_logger().info(
-            'MediaPipe Vision Node Started'
-        )
+        self.get_logger().info('MediaPipe Vision Node Started')
 
     def update(self):
 
@@ -59,10 +40,7 @@ class MediaPipeNode(Node):
 
         frame = cv2.flip(frame, 1)
 
-        rgb = cv2.cvtColor(
-            frame,
-            cv2.COLOR_BGR2RGB
-        )
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         results = self.hands.process(rgb)
 
@@ -76,32 +54,15 @@ class MediaPipeNode(Node):
 
             for landmark in hand_landmarks.landmark:
 
-                landmark_data.extend([
+                landmark_data.extend([landmark.x, landmark.y, landmark.z])
 
-                    landmark.x,
-                    landmark.y,
-                    landmark.z
-
-                ])
-
-            self.mp_draw.draw_landmarks(
-
-                frame,
-
-                hand_landmarks,
-
-                self.mp_hands.HAND_CONNECTIONS
-
-            )
+            self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
 
         msg.data = landmark_data
 
         self.publisher_.publish(msg)
 
-        cv2.imshow(
-            "Robot Hand Vision",
-            frame
-        )
+        cv2.imshow("Robot Hand Vision", frame)
 
         cv2.waitKey(1)
 

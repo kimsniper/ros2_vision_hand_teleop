@@ -15,17 +15,9 @@ public:
     : Node("teleop_node")
     {
         landmark_sub_ =
-            this->create_subscription<std_msgs::msg::Float64MultiArray>(
-                "/hand/landmarks",
-                10,
-                std::bind(&TeleopNode::landmarkCallback, this, std::placeholders::_1)
-            );
+            this->create_subscription<std_msgs::msg::Float64MultiArray>("/hand/landmarks", 10, std::bind(&TeleopNode::landmarkCallback, this, std::placeholders::_1));
 
-        joint_pub_ =
-            this->create_publisher<sensor_msgs::msg::JointState>(
-                "/joint_states",
-                10
-            );
+        joint_pub_ = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
 
         previous_joints_.assign(15, 0.0);
 
