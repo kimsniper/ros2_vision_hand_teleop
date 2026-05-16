@@ -1,0 +1,350 @@
+<?xml version="1.0"?>
+<robot name="robot_hand">
+
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="0.05 0.05 0.05"/>
+      </geometry>
+    </visual>
+
+    <collision>
+      <geometry>
+        <box size="0.05 0.05 0.05"/>
+      </geometry>
+    </collision>
+
+    <inertial>
+      <mass value="0.2"/>
+      <inertia
+        ixx="0.0001"
+        iyy="0.0001"
+        izz="0.0001"
+        ixy="0"
+        ixz="0"
+        iyz="0"/>
+    </inertial>
+  </link>
+
+  <link name="palm_link">
+
+    <visual>
+      <geometry>
+        <box size="0.12 0.10 0.03"/>
+      </geometry>
+    </visual>
+
+    <collision>
+      <geometry>
+        <box size="0.12 0.10 0.03"/>
+      </geometry>
+    </collision>
+
+    <inertial>
+      <mass value="0.5"/>
+      <inertia
+        ixx="0.001"
+        iyy="0.001"
+        izz="0.001"
+        ixy="0"
+        ixz="0"
+        iyz="0"/>
+    </inertial>
+
+  </link>
+
+  <joint name="base_to_palm" type="fixed">
+    <parent link="base_link"/>
+    <child link="palm_link"/>
+    <origin xyz="0 0 0.05"/>
+  </joint>
+
+  <link name="index_proximal">
+
+    <visual>
+      <origin xyz="0 0 0.025"/>
+      <geometry>
+        <cylinder radius="0.008" length="0.05"/>
+      </geometry>
+    </visual>
+
+  </link>
+
+  <joint name="index_mcp" type="revolute">
+
+    <parent link="palm_link"/>
+    <child link="index_proximal"/>
+
+    <origin xyz="0.03 0.025 0.015"/>
+
+    <axis xyz="0 1 0"/>
+
+    <limit
+      lower="0"
+      upper="1.57"
+      effort="2"
+      velocity="2"/>
+
+  </joint>
+
+  <link name="index_middle">
+
+    <visual>
+      <origin xyz="0 0 0.022"/>
+      <geometry>
+        <cylinder radius="0.007" length="0.045"/>
+      </geometry>
+    </visual>
+
+  </link>
+
+  <joint name="index_pip" type="revolute">
+
+    <parent link="index_proximal"/>
+    <child link="index_middle"/>
+
+    <origin xyz="0 0 0.05"/>
+
+    <axis xyz="0 1 0"/>
+
+    <limit
+      lower="0"
+      upper="1.57"
+      effort="2"
+      velocity="2"/>
+
+  </joint>
+
+  <link name="index_distal">
+
+    <visual>
+      <origin xyz="0 0 0.017"/>
+      <geometry>
+        <cylinder radius="0.006" length="0.035"/>
+      </geometry>
+    </visual>
+
+  </link>
+
+  <joint name="index_dip" type="revolute">
+
+    <parent link="index_middle"/>
+    <child link="index_distal"/>
+
+    <origin xyz="0 0 0.045"/>
+
+    <axis xyz="0 1 0"/>
+
+    <limit
+      lower="0"
+      upper="1.57"
+      effort="2"
+      velocity="2"/>
+
+  </joint>
+
+  <link name="middle_proximal">
+    <visual>
+      <origin xyz="0 0 0.027"/>
+      <geometry>
+        <cylinder radius="0.008" length="0.055"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="middle_mcp" type="revolute">
+    <parent link="palm_link"/>
+    <child link="middle_proximal"/>
+    <origin xyz="0.00 0.025 0.015"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.57" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="middle_middle">
+    <visual>
+      <origin xyz="0 0 0.024"/>
+      <geometry>
+        <cylinder radius="0.007" length="0.048"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="middle_pip" type="revolute">
+    <parent link="middle_proximal"/>
+    <child link="middle_middle"/>
+    <origin xyz="0 0 0.055"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.57" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="middle_distal">
+    <visual>
+      <origin xyz="0 0 0.018"/>
+      <geometry>
+        <cylinder radius="0.006" length="0.036"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="middle_dip" type="revolute">
+    <parent link="middle_middle"/>
+    <child link="middle_distal"/>
+    <origin xyz="0 0 0.048"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.57" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="ring_proximal">
+    <visual>
+      <origin xyz="0 0 0.025"/>
+      <geometry>
+        <cylinder radius="0.0075" length="0.05"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="ring_mcp" type="revolute">
+    <parent link="palm_link"/>
+    <child link="ring_proximal"/>
+    <origin xyz="-0.03 0.022 0.015"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.57" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="ring_middle">
+    <visual>
+      <origin xyz="0 0 0.022"/>
+      <geometry>
+        <cylinder radius="0.0065" length="0.045"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="ring_pip" type="revolute">
+    <parent link="ring_proximal"/>
+    <child link="ring_middle"/>
+    <origin xyz="0 0 0.05"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.57" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="ring_distal">
+    <visual>
+      <origin xyz="0 0 0.016"/>
+      <geometry>
+        <cylinder radius="0.0055" length="0.032"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="ring_dip" type="revolute">
+    <parent link="ring_middle"/>
+    <child link="ring_distal"/>
+    <origin xyz="0 0 0.045"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.57" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="pinky_proximal">
+    <visual>
+      <origin xyz="0 0 0.022"/>
+      <geometry>
+        <cylinder radius="0.0065" length="0.045"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="pinky_mcp" type="revolute">
+    <parent link="palm_link"/>
+    <child link="pinky_proximal"/>
+    <origin xyz="-0.055 0.018 0.015"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.57" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="pinky_middle">
+    <visual>
+      <origin xyz="0 0 0.018"/>
+      <geometry>
+        <cylinder radius="0.0055" length="0.036"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="pinky_pip" type="revolute">
+    <parent link="pinky_proximal"/>
+    <child link="pinky_middle"/>
+    <origin xyz="0 0 0.045"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.57" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="pinky_distal">
+    <visual>
+      <origin xyz="0 0 0.014"/>
+      <geometry>
+        <cylinder radius="0.005" length="0.028"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="pinky_dip" type="revolute">
+    <parent link="pinky_middle"/>
+    <child link="pinky_distal"/>
+    <origin xyz="0 0 0.036"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.57" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="thumb_proximal">
+    <visual>
+      <origin xyz="0 0 0.02"/>
+      <geometry>
+        <cylinder radius="0.009" length="0.04"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="thumb_mcp" type="revolute">
+    <parent link="palm_link"/>
+    <child link="thumb_proximal"/>
+    <origin xyz="0.045 -0.025 0.01" rpy="0 0 0.8"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.8" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="thumb_middle">
+    <visual>
+      <origin xyz="0 0 0.018"/>
+      <geometry>
+        <cylinder radius="0.008" length="0.036"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="thumb_pip" type="revolute">
+    <parent link="thumb_proximal"/>
+    <child link="thumb_middle"/>
+    <origin xyz="0 0 0.04"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.8" effort="2" velocity="2"/>
+  </joint>
+
+  <link name="thumb_distal">
+    <visual>
+      <origin xyz="0 0 0.015"/>
+      <geometry>
+        <cylinder radius="0.007" length="0.03"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="thumb_dip" type="revolute">
+    <parent link="thumb_middle"/>
+    <child link="thumb_distal"/>
+    <origin xyz="0 0 0.036"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="1.8" effort="2" velocity="2"/>
+  </joint>
+
+</robot>
