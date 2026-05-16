@@ -21,6 +21,12 @@ class MediaPipeNode(Node):
 
         self.cap = cv2.VideoCapture(0)
 
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+
+        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+
         self.mp_hands = mp.solutions.hands
 
         self.hands = self.mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -39,6 +45,17 @@ class MediaPipeNode(Node):
             return
 
         frame = cv2.flip(frame, 1)
+
+        h, w, _ = frame.shape
+
+        crop_size = int(min(h, w) * 0.6)
+
+        x1 = (w - crop_size)
+        y1 = (h - crop_size)
+        x2 = x1 + crop_size
+        y2 = y1 + crop_size
+
+        frame = frame[y1:y2, x1:x2]
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -63,6 +80,7 @@ class MediaPipeNode(Node):
         self.publisher_.publish(msg)
 
         cv2.imshow("Robot Hand Vision", frame)
+        cv2.resizeWindow("Robot Hand Vision", 400, 400)
 
         cv2.waitKey(1)
 
