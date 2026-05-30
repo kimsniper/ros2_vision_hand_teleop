@@ -141,3 +141,11 @@ robot_vision - MediaPipe vision node
 4. Mapping to joint angles  
 5. Publish to ROS2 `/joint_states`  
 6. RViz renders humanoid hand motion  
+
+---
+
+### Working Demo Video
+![Demo](./images/mediapipe-ros2-demo.gif)
+
+
+Vision Hand Teleop Demo: https://www.linkedin.com/feed/update/urn:li:activity:7461981548058144768/
