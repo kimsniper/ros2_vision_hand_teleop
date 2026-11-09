@@ -1,0 +1,15 @@
+controller_names:
+  - arm_trajectory_controller
+
+arm_trajectory_controller:
+  action_ns: follow_joint_trajectory
+  type: FollowJointTrajectory
+  default: true
+  joints:
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+    - A7

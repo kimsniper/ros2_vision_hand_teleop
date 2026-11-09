@@ -11,8 +11,25 @@ find_package(ament_cmake REQUIRED)
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
-install(DIRECTORY urdf rviz
+install(
+  DIRECTORY
+    urdf
+    rviz
   DESTINATION share/${PROJECT_NAME}
+)
+
+install(
+  DIRECTORY
+    dex-urdf/robots/arms/iiwa14/meshes
+  DESTINATION
+    share/${PROJECT_NAME}/dex-urdf/robots/arms/iiwa14
+)
+
+install(
+  DIRECTORY
+    dex-urdf/robots/hands/schunk_hand/meshes
+  DESTINATION
+    share/${PROJECT_NAME}/dex-urdf/robots/hands/schunk_hand
 )
 
 if(BUILD_TESTING)

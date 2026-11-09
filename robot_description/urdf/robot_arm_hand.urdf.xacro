@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<robot
+  xmlns:xacro="http://www.ros.org/wiki/xacro"
+  name="iiwa14_schunk_svh">
+
+  <xacro:include filename="iiwa14.xacro"/>
+  <xacro:include filename="schunk_svh_right.xacro"/>
+  <xacro:include filename="robot_control.xacro"/>
+
+  <link name="world"/>
+
+  <xacro:iiwa14 parent="world"/>
+  <xacro:schunk_svh_right parent="ee_link"/>
+  <xacro:robot_control/>
+</robot>
