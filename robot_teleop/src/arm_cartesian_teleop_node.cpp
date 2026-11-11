@@ -27,7 +27,7 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/float64_multi_array.hpp"
+#include "robot_vision_msgs/msg/hand_landmarks.hpp"
 
 class ArmCartesianTeleopNode : public rclcpp::Node {
 public:
@@ -46,15 +46,6 @@ public:
     base_frame_ = declare_parameter<std::string>("base_frame", "link_0");
 
     tip_link_ = declare_parameter<std::string>("tip_link", "ee_link");
-
-    enable_right_ = declare_parameter<bool>("enable_right", true);
-
-    enable_left_ = declare_parameter<bool>("enable_left", false);
-
-    if (enable_right_ == enable_left_) {
-      throw std::invalid_argument(
-          "Exactly one of enable_right or enable_left must be true");
-    }
 
     const double publish_rate_hz =
         declare_parameter<double>("publish_rate_hz", 10.0);
@@ -96,7 +87,7 @@ public:
         create_publisher<geometry_msgs::msg::PoseStamped>(target_topic, 10);
 
     landmark_subscription_ =
-        create_subscription<std_msgs::msg::Float64MultiArray>(
+        create_subscription<robot_vision_msgs::msg::HandLandmarks>(
             landmarks_topic, 10,
             std::bind(&ArmCartesianTeleopNode::landmarkCallback, this,
                       std::placeholders::_1));
@@ -139,33 +130,20 @@ private:
     return center;
   }
 
-  static bool isDetected(const std::vector<double> &data) {
-    return std::any_of(data.begin(), data.end(),
-                       [](double value) { return value != 0.0; });
-  }
-
   void resetTracking() {
     has_latest_palm_center_ = false;
     calibrated_ = false;
   }
 
-  void
-  landmarkCallback(const std_msgs::msg::Float64MultiArray::SharedPtr message) {
-    if (message->data.size() != 126U) {
-      RCLCPP_WARN(get_logger(), "Ignoring landmark message with length %zu",
-                  message->data.size());
+  void landmarkCallback(
+      const robot_vision_msgs::msg::HandLandmarks::SharedPtr message) {
+    if (!message->hand_detected) {
       resetTracking();
       return;
     }
 
-    const auto hand_begin = message->data.begin() + (enable_left_ ? 63U : 0U);
-
-    const std::vector<double> hand_data(hand_begin, hand_begin + 63U);
-
-    if (!isDetected(hand_data)) {
-      resetTracking();
-      return;
-    }
+    const std::vector<double> hand_data(message->landmarks.begin(),
+                                        message->landmarks.end());
 
     for (const double value : hand_data) {
       if (!std::isfinite(value)) {
@@ -281,13 +259,11 @@ private:
 
   bool has_latest_palm_center_;
   bool calibrated_;
-  bool enable_right_;
-  bool enable_left_;
 
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr
       target_publisher_;
 
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
+  rclcpp::Subscription<robot_vision_msgs::msg::HandLandmarks>::SharedPtr
       landmark_subscription_;
 
   rclcpp::TimerBase::SharedPtr timer_;

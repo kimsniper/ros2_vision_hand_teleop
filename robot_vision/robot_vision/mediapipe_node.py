@@ -49,7 +49,7 @@ class MediaPipeNode(Node):
 
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
-            max_num_hands=2,
+            max_num_hands=1,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
@@ -90,10 +90,8 @@ class MediaPipeNode(Node):
         msg.header.stamp = frame_stamp
         msg.header.frame_id = 'camera_frame'
 
-        right_data = [0.0] * 63
-        left_data = [0.0] * 63
-        right_hand_detected = False
-        left_hand_detected = False
+        landmark_data = [0.0] * 63
+        hand_detected = False
 
         if (
             results.multi_hand_landmarks
@@ -114,35 +112,33 @@ class MediaPipeNode(Node):
                     .label
                 )
 
+                if handedness != "Right":
+                    continue
+
+                detected_landmarks = []
+
+                for landmark in hand_landmarks.landmark:
+                    detected_landmarks.extend([
+                        landmark.x,
+                        landmark.y,
+                        landmark.z,
+                    ])
+
+                if len(detected_landmarks) != 63:
+                    continue
+
                 self.mp_draw.draw_landmarks(
                     frame,
                     hand_landmarks,
                     self.mp_hands.HAND_CONNECTIONS,
                 )
 
-                landmark_data = []
+                landmark_data = detected_landmarks
+                hand_detected = True
+                break
 
-                for landmark in hand_landmarks.landmark:
-                    landmark_data.extend([
-                        landmark.x,
-                        landmark.y,
-                        landmark.z,
-                    ])
-
-                if len(landmark_data) != 63:
-                    continue
-
-                if handedness == "Right":
-                    right_data = landmark_data
-                    right_hand_detected = True
-                elif handedness == "Left":
-                    left_data = landmark_data
-                    left_hand_detected = True
-
-        msg.right_landmarks = right_data
-        msg.left_landmarks = left_data
-        msg.right_hand_detected = right_hand_detected
-        msg.left_hand_detected = left_hand_detected
+        msg.landmarks = landmark_data
+        msg.hand_detected = hand_detected
 
         self.publisher_.publish(msg)
 

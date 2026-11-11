@@ -23,10 +23,11 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/float64_multi_array.hpp"
+#include "robot_vision_msgs/msg/hand_landmarks.hpp"
 
 class ArmCartesianDeltaTeleopNode : public rclcpp::Node {
 public:
@@ -42,14 +43,6 @@ public:
 
     const auto cartesian_delta_topic = declare_parameter<std::string>(
         "cartesian_delta_topic", "/arm/cartesian_delta");
-
-    enable_right_ = declare_parameter<bool>("enable_right", true);
-    enable_left_ = declare_parameter<bool>("enable_left", false);
-
-    if (enable_right_ == enable_left_) {
-      throw std::invalid_argument(
-          "Exactly one of enable_right or enable_left must be true");
-    }
 
     const double publish_rate_hz =
         declare_parameter<double>("publish_rate_hz", 15.0);
@@ -78,7 +71,7 @@ public:
             cartesian_delta_topic, 10);
 
     landmark_subscription_ =
-        create_subscription<std_msgs::msg::Float64MultiArray>(
+        create_subscription<robot_vision_msgs::msg::HandLandmarks>(
             landmarks_topic, 10,
             std::bind(&ArmCartesianDeltaTeleopNode::landmarkCallback, this,
                       std::placeholders::_1));
@@ -129,29 +122,15 @@ private:
     publishStop();
   }
 
-  static bool isDetected(const std::vector<double> &data) {
-    return std::any_of(data.begin(), data.end(),
-                       [](double value) { return value != 0.0; });
-  }
-
-  void
-  landmarkCallback(const std_msgs::msg::Float64MultiArray::SharedPtr message) {
-    if (message->data.size() != 126U) {
-      RCLCPP_WARN(get_logger(), "Ignoring landmark message with length %zu",
-                  message->data.size());
-
+  void landmarkCallback(
+      const robot_vision_msgs::msg::HandLandmarks::SharedPtr message) {
+    if (!message->hand_detected) {
       resetTracking();
       return;
     }
 
-    const auto hand_begin = message->data.begin() + (enable_left_ ? 63U : 0U);
-
-    const std::vector<double> hand_data(hand_begin, hand_begin + 63U);
-
-    if (!isDetected(hand_data)) {
-      resetTracking();
-      return;
-    }
+    const std::vector<double> hand_data(message->landmarks.begin(),
+                                        message->landmarks.end());
 
     for (const double value : hand_data) {
       if (!std::isfinite(value)) {
@@ -255,13 +234,11 @@ private:
   Point filtered_cartesian_delta_;
 
   bool has_latest_palm_center_;
-  bool enable_right_;
-  bool enable_left_;
 
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr
       cartesian_delta_publisher_;
 
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
+  rclcpp::Subscription<robot_vision_msgs::msg::HandLandmarks>::SharedPtr
       landmark_subscription_;
 
   rclcpp::TimerBase::SharedPtr timer_;

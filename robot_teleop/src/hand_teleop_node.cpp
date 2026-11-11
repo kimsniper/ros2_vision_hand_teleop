@@ -22,8 +22,10 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "robot_vision_msgs/msg/hand_landmarks.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 
 class HandTeleopNode : public rclcpp::Node {
@@ -38,19 +40,11 @@ public:
     const auto command_topic = declare_parameter<std::string>(
         "command_topic", "/hand_position_controller/commands");
 
-    enable_right_ = declare_parameter<bool>("enable_right", true);
-    enable_left_ = declare_parameter<bool>("enable_left", false);
-
-    if (enable_right_ == enable_left_) {
-      throw std::invalid_argument(
-          "Exactly one of enable_right or enable_left must be true");
-    }
-
     command_publisher_ =
         create_publisher<std_msgs::msg::Float64MultiArray>(command_topic, 10);
 
     landmark_subscription_ =
-        create_subscription<std_msgs::msg::Float64MultiArray>(
+        create_subscription<robot_vision_msgs::msg::HandLandmarks>(
             landmarks_topic, 10,
             std::bind(&HandTeleopNode::landmarkCallback, this,
                       std::placeholders::_1));
@@ -218,26 +212,14 @@ private:
     return mapped;
   }
 
-  static bool isDetected(const std::vector<double> &data) {
-    return std::any_of(data.begin(), data.end(),
-                       [](double value) { return value != 0.0; });
-  }
-
-  void
-  landmarkCallback(const std_msgs::msg::Float64MultiArray::SharedPtr message) {
-    if (message->data.size() != 126U) {
-      RCLCPP_WARN(get_logger(), "Ignoring landmark message with length %zu",
-                  message->data.size());
+  void landmarkCallback(
+      const robot_vision_msgs::msg::HandLandmarks::SharedPtr message) {
+    if (!message->hand_detected) {
       return;
     }
 
-    const auto hand_begin = message->data.begin() + (enable_left_ ? 63U : 0U);
-
-    const std::vector<double> hand_data(hand_begin, hand_begin + 63U);
-
-    if (!isDetected(hand_data)) {
-      return;
-    }
+    const std::vector<double> hand_data(message->landmarks.begin(),
+                                        message->landmarks.end());
 
     for (const double value : hand_data) {
       if (!std::isfinite(value)) {
@@ -264,13 +246,11 @@ private:
   }
 
   HandJoints previous_hand_joints_;
-  bool enable_right_;
-  bool enable_left_;
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr
       command_publisher_;
 
-  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr
+  rclcpp::Subscription<robot_vision_msgs::msg::HandLandmarks>::SharedPtr
       landmark_subscription_;
 };
 

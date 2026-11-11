@@ -90,17 +90,16 @@ rosdep install --from-paths src --ignore-src -r -y
 
 ### Vision
 
-`robot_vision` captures webcam frames, runs MediaPipe hand tracking, and publishes 21 landmarks for each hand.
+`robot_vision` captures webcam frames, runs MediaPipe hand tracking, and publishes 21 landmarks for the right hand.
 
 ```text
 /hand/landmarks
 ```
 
-The message contains 126 `float64` values:
+The timestamped message contains 63 `float64` landmark values and an explicit detection flag:
 
 ```text
 right hand: 21 landmarks × x/y/z = 63 values
-left hand:  21 landmarks × x/y/z = 63 values
 ```
 
 ### Hand Teleoperation
@@ -201,7 +200,7 @@ cartesian_delta
 
 | Topic | Type | Description |
 |---|---|---|
-| `/hand/landmarks` | `std_msgs/msg/Float64MultiArray` | MediaPipe landmarks for the right and left hands |
+| `/hand/landmarks` | `robot_vision_msgs/msg/HandLandmarks` | Timestamped MediaPipe landmarks for the right hand |
 | `/arm/cartesian_target` | `geometry_msgs/msg/PoseStamped` | Absolute Cartesian arm target |
 | `/arm/cartesian_delta` | `geometry_msgs/msg/TwistStamped` | Cartesian arm increment |
 | `/arm_trajectory_controller/follow_joint_trajectory` | `control_msgs/action/FollowJointTrajectory` | Arm trajectory action |
