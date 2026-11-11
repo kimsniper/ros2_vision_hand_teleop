@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
 
+# Copyright 2026 Mezael Docoy
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 import cv2
 import mediapipe as mp
-import numpy as np
 
 import rclpy
 
@@ -21,17 +35,33 @@ class MediaPipeNode(Node):
 
         self.cap = cv2.VideoCapture(0)
 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, 10)
 
         self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
 
         self.mp_hands = mp.solutions.hands
 
-        self.hands = self.mp_hands.Hands(static_image_mode=False, max_num_hands=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=2,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
 
         self.mp_draw = mp.solutions.drawing_utils
+
+        self.window_name = "Robot Hand Vision"
+        cv2.namedWindow(
+            self.window_name,
+            cv2.WINDOW_NORMAL,
+        )
+        cv2.resizeWindow(
+            self.window_name,
+            960,
+            720,
+        )
 
         self.timer = self.create_timer(0.03, self.update)
 
@@ -46,41 +76,62 @@ class MediaPipeNode(Node):
 
         frame = cv2.flip(frame, 1)
 
-        h, w, _ = frame.shape
-
-        crop_size = int(min(h, w) * 0.6)
-
-        x1 = (w - crop_size)
-        y1 = (h - crop_size)
-        x2 = x1 + crop_size
-        y2 = y1 + crop_size
-
-        frame = frame[y1:y2, x1:x2]
-
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         results = self.hands.process(rgb)
 
         msg = Float64MultiArray()
 
-        landmark_data = []
+        right_data = [0.0] * 63
+        left_data = [0.0] * 63
 
-        if results.multi_hand_landmarks:
+        if (
+            results.multi_hand_landmarks
+            and results.multi_handedness
+        ):
+            detected_count = min(
+                len(results.multi_hand_landmarks),
+                len(results.multi_handedness),
+            )
 
-            hand_landmarks = results.multi_hand_landmarks[0]
+            for index in range(detected_count):
+                hand_landmarks = (
+                    results.multi_hand_landmarks[index]
+                )
+                handedness = (
+                    results.multi_handedness[index]
+                    .classification[0]
+                    .label
+                )
 
-            for landmark in hand_landmarks.landmark:
+                self.mp_draw.draw_landmarks(
+                    frame,
+                    hand_landmarks,
+                    self.mp_hands.HAND_CONNECTIONS,
+                )
 
-                landmark_data.extend([landmark.x, landmark.y, landmark.z])
+                landmark_data = []
 
-            self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+                for landmark in hand_landmarks.landmark:
+                    landmark_data.extend([
+                        landmark.x,
+                        landmark.y,
+                        landmark.z,
+                    ])
 
-        msg.data = landmark_data
+                if len(landmark_data) != 63:
+                    continue
+
+                if handedness == "Right":
+                    right_data = landmark_data
+                elif handedness == "Left":
+                    left_data = landmark_data
+
+        msg.data = right_data + left_data
 
         self.publisher_.publish(msg)
 
-        cv2.imshow("Robot Hand Vision", frame)
-        cv2.resizeWindow("Robot Hand Vision", 400, 400)
+        cv2.imshow(self.window_name, frame)
 
         cv2.waitKey(1)
 

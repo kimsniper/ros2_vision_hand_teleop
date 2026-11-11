@@ -16,7 +16,7 @@ setup(
     maintainer='Mezael Docoy',
     maintainer_email='kim1991mail@gmail.com',
     description='Robot Hand Vision Package',
-    license='BSD-3-Clause',
+    license='Apache 2.0',
     extras_require={
         'test': [
             'pytest',

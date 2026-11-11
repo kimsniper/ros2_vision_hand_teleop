@@ -5,18 +5,13 @@
   <version>1.0.0</version>
   <description>Robot Hand Teleop Package</description>
   <maintainer email="kim1991mail@gmail.com">Mezael Docoy</maintainer>
-  <license>BSD-3-Clause</license>
-
+  <license>Apache 2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
-
-  <depend>rclcpp</depend>
-  <depend>std_msgs</depend>
-
-  <exec_depend>sensor_msgs</exec_depend>
-
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
-
+  <depend>geometry_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>

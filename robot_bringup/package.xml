@@ -5,14 +5,18 @@
   <version>1.0.0</version>
   <description>Robot Hand Bringup Package</description>
   <maintainer email="kim1991mail@gmail.com">Mezael Docoy</maintainer>
-  <license>BSD-3-Clause</license>
+  <license>Apache 2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>robot_state_publisher</depend>
-  <depend>joint_state_publisher_gui</depend>
-  <depend>rviz2</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>robot_control</exec_depend>
+  <exec_depend>robot_description</exec_depend>
+  <exec_depend>robot_moveit</exec_depend>
+  <exec_depend>robot_teleop</exec_depend>
+  <exec_depend>robot_vision</exec_depend>
+  <exec_depend>rviz2</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

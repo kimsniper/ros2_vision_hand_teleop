@@ -1,0 +1,5 @@
+repositories:
+  ros2_vision_hand_teleop/robot_description/dex-urdf:
+    type: git
+    url: https://github.com/kimsniper/dex-urdf.git
+    version: main
