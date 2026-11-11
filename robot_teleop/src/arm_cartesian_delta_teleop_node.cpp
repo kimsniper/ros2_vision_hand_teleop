@@ -38,8 +38,8 @@ public:
         latest_palm_center_{0.0, 0.0, 0.0}, filtered_cartesian_delta_{0.0, 0.0,
                                                                       0.0},
         has_latest_palm_center_(false) {
-    const auto landmarks_topic =
-        declare_parameter<std::string>("landmarks_topic", "/hand/landmarks");
+    const auto landmarks_topic = declare_parameter<std::string>(
+        "landmarks_topic", "/hand/landmarks/filtered");
 
     const auto cartesian_delta_topic = declare_parameter<std::string>(
         "cartesian_delta_topic", "/arm/cartesian_delta");

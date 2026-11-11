@@ -37,8 +37,8 @@ public:
       : Node("arm_cartesian_teleop_node"), latest_palm_center_{0.0, 0.0, 0.0},
         calibrated_palm_center_{0.0, 0.0, 0.0}, has_latest_palm_center_(false),
         calibrated_(false) {
-    const auto landmarks_topic =
-        declare_parameter<std::string>("landmarks_topic", "/hand/landmarks");
+    const auto landmarks_topic = declare_parameter<std::string>(
+        "landmarks_topic", "/hand/landmarks/filtered");
 
     const auto target_topic =
         declare_parameter<std::string>("target_topic", "/arm/cartesian_target");

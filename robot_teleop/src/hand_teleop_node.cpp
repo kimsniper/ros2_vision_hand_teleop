@@ -34,8 +34,8 @@ public:
   using HandJoints = std::array<double, 11>;
 
   HandTeleopNode() : Node("hand_teleop_node"), previous_hand_joints_{} {
-    const auto landmarks_topic =
-        declare_parameter<std::string>("landmarks_topic", "/hand/landmarks");
+    const auto landmarks_topic = declare_parameter<std::string>(
+        "landmarks_topic", "/hand/landmarks/filtered");
 
     const auto command_topic = declare_parameter<std::string>(
         "command_topic", "/hand_position_controller/commands");
