@@ -6,6 +6,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(robot_vision_msgs REQUIRED)
 
 add_library(${PROJECT_NAME} INTERFACE)
 
@@ -26,9 +28,33 @@ install(
     DESTINATION include
 )
 
+add_executable(
+    state_estimator_node
+    src/state_estimator_node.cpp
+)
+
+target_compile_features(
+    state_estimator_node
+    PRIVATE cxx_std_17
+)
+
+target_link_libraries(
+    state_estimator_node
+    ${PROJECT_NAME}
+)
+
+ament_target_dependencies(
+    state_estimator_node
+    rclcpp
+    robot_vision_msgs
+)
+
 install(
-    TARGETS ${PROJECT_NAME}
+    TARGETS
+        ${PROJECT_NAME}
+        state_estimator_node
     EXPORT export_${PROJECT_NAME}
+    DESTINATION lib/${PROJECT_NAME}
 )
 
 ament_export_targets(
