@@ -96,6 +96,61 @@ rosdep install --from-paths src --ignore-src -r -y
 /hand/landmarks
 ```
 
+### Hand State Estimation
+
+MediaPipe landmark measurements can contain frame-to-frame jitter, irregular timing, and short tracking interruptions. The `robot_state_estimation` package provides a dedicated `state_estimator_node` between vision and teleoperation so robot commands are generated from an estimated hand state instead of directly from raw landmarks.
+
+```text
+Camera frame
+    |
+MediaPipe right-hand landmarks
+    |  /hand/landmarks
+state_estimator_node
+    |  /hand/landmarks/filtered
+Cartesian, Cartesian-delta, and hand teleoperation
+```
+
+The estimator runs 63 independent constant-velocity Kalman filters, one for every `x`, `y`, and `z` coordinate across the 21 MediaPipe hand landmarks. Each coordinate uses the state:
+
+```text
+state = [position, velocity]
+measurement = position
+```
+
+The measurement timestamp determines the update interval `dt`. The estimator preserves the input timestamp and `frame_id` in the filtered output.
+
+Estimator behavior:
+
+- The first valid detection initializes all 63 filters directly from the measured landmarks.
+- Valid timestamped measurements perform Kalman prediction and correction for every coordinate.
+- A missing, non-increasing, or excessively delayed timestamp reinitializes the filters from the current measurement.
+- `hand_detected=false` immediately resets all filters and publishes 63 zeros with detection disabled.
+- The first valid measurement after tracking loss initializes a new estimate without carrying stale velocity forward.
+
+This immediate reset behavior preserves the teleoperation safety path: Cartesian-delta control receives a zero stop command, while hand teleoperation suppresses new commands until the right hand is detected again.
+
+#### Kalman Filter Parameters
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `process_noise` | `0.1` | Allows estimated landmark velocity to change |
+| `measurement_noise` | `0.01` | Controls trust in MediaPipe measurements |
+| `initial_position_variance` | `1.0` | Initial landmark-position uncertainty |
+| `initial_velocity_variance` | `1.0` | Initial landmark-velocity uncertainty |
+| `minimum_dt` | `0.001 s` | Prevents updates with an excessively small interval |
+| `maximum_dt` | `0.5 s` | Reinitializes after stale or delayed measurements |
+
+Higher `measurement_noise` produces smoother estimates but can introduce more motion lag. Higher `process_noise` follows rapid hand motion more closely but can pass more measurement jitter. The current values are initial operating defaults and should be tuned using measured raw-versus-filtered jitter and motion latency for the target camera and lighting conditions.
+
+The raw and filtered landmark streams can be inspected with:
+
+```bash
+ros2 topic echo /hand/landmarks
+ros2 topic echo /hand/landmarks/filtered
+ros2 topic hz /hand/landmarks
+ros2 topic hz /hand/landmarks/filtered
+```
+
 The timestamped message contains 63 `float64` landmark values and an explicit detection flag:
 
 ```text
@@ -200,7 +255,8 @@ cartesian_delta
 
 | Topic | Type | Description |
 |---|---|---|
-| `/hand/landmarks` | `robot_vision_msgs/msg/HandLandmarks` | Timestamped MediaPipe landmarks for the right hand |
+| `/hand/landmarks` | `robot_vision_msgs/msg/HandLandmarks` | Raw timestamped MediaPipe landmarks for the right hand |
+| `/hand/landmarks/filtered` | `robot_vision_msgs/msg/HandLandmarks` | Kalman-filtered landmarks used by teleoperation |
 | `/arm/cartesian_target` | `geometry_msgs/msg/PoseStamped` | Absolute Cartesian arm target |
 | `/arm/cartesian_delta` | `geometry_msgs/msg/TwistStamped` | Cartesian arm increment |
 | `/arm_trajectory_controller/follow_joint_trajectory` | `control_msgs/action/FollowJointTrajectory` | Arm trajectory action |
