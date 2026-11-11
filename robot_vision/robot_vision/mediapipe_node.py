@@ -22,7 +22,7 @@ import rclpy
 
 from rclpy.node import Node
 
-from std_msgs.msg import Float64MultiArray
+from robot_vision_msgs.msg import HandLandmarks
 
 
 class MediaPipeNode(Node):
@@ -31,7 +31,11 @@ class MediaPipeNode(Node):
 
         super().__init__('mediapipe_node')
 
-        self.publisher_ = self.create_publisher(Float64MultiArray, '/hand/landmarks', 10)
+        self.publisher_ = self.create_publisher(
+            HandLandmarks,
+            '/hand/landmarks',
+            10,
+        )
 
         self.cap = cv2.VideoCapture(0)
 
@@ -74,16 +78,22 @@ class MediaPipeNode(Node):
         if not success:
             return
 
+        frame_stamp = self.get_clock().now().to_msg()
+
         frame = cv2.flip(frame, 1)
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         results = self.hands.process(rgb)
 
-        msg = Float64MultiArray()
+        msg = HandLandmarks()
+        msg.header.stamp = frame_stamp
+        msg.header.frame_id = 'camera_frame'
 
         right_data = [0.0] * 63
         left_data = [0.0] * 63
+        right_hand_detected = False
+        left_hand_detected = False
 
         if (
             results.multi_hand_landmarks
@@ -124,10 +134,15 @@ class MediaPipeNode(Node):
 
                 if handedness == "Right":
                     right_data = landmark_data
+                    right_hand_detected = True
                 elif handedness == "Left":
                     left_data = landmark_data
+                    left_hand_detected = True
 
-        msg.data = right_data + left_data
+        msg.right_landmarks = right_data
+        msg.left_landmarks = left_data
+        msg.right_hand_detected = right_hand_detected
+        msg.left_hand_detected = left_hand_detected
 
         self.publisher_.publish(msg)
 
