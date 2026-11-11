@@ -10,7 +10,8 @@ if [ -z "${ROS_DISTRO:-}" ]; then
     exit 1
 fi
 
-WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd "${REPOSITORY_ROOT}/../.." && pwd)"
 SOURCE_ROOT="${WORKSPACE_ROOT}/src"
 
 if [ ! -d "${SOURCE_ROOT}" ]; then
@@ -26,9 +27,9 @@ if ! command -v rosdep >/dev/null 2>&1; then
 fi
 
 python3 -m pip install --user \
-    mediapipe \
-    numpy \
-    opencv-python
+    "numpy==1.26.4" \
+    "mediapipe==0.10.9" \
+    "opencv-contrib-python==4.11.0.86"
 
 rosdep update
 rosdep install \
