@@ -25,7 +25,9 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "robot_state_estimation/constant_velocity_kalman_filter.hpp"
+#include "robot_state_estimation/palm_state_extractor.hpp"
 #include "robot_vision_msgs/msg/hand_landmarks.hpp"
+#include "robot_vision_msgs/msg/hand_state.hpp"
 
 namespace robot_state_estimation {
 
@@ -37,6 +39,9 @@ public:
 
     const std::string output_topic = declare_parameter<std::string>(
         "output_topic", "/hand/landmarks/filtered");
+
+    const std::string state_topic =
+        declare_parameter<std::string>("state_topic", "/hand/state");
 
     process_noise_ = declarePositiveParameter("process_noise", 0.1);
 
@@ -52,6 +57,18 @@ public:
 
     maximum_dt_ = declarePositiveParameter("maximum_dt", 0.5);
 
+    depth_scale_deadband_ =
+        declarePositiveParameter("depth_scale_deadband", 0.03);
+
+    minimum_palm_normal_z_ =
+        declare_parameter<double>("minimum_palm_normal_z", 0.70);
+
+    if (!std::isfinite(minimum_palm_normal_z_) ||
+        minimum_palm_normal_z_ < 0.0 || minimum_palm_normal_z_ > 1.0) {
+      throw std::invalid_argument(
+          "minimum_palm_normal_z must be within [0, 1]");
+    }
+
     if (minimum_dt_ > maximum_dt_) {
       throw std::invalid_argument("minimum_dt must not exceed maximum_dt");
     }
@@ -64,16 +81,23 @@ public:
                             initial_velocity_variance_);
     }
 
+    depth_filter_ = std::make_unique<ConstantVelocityKalmanFilter>(
+        process_noise_, measurement_noise_, initial_position_variance_,
+        initial_velocity_variance_);
+
     publisher_ = create_publisher<robot_vision_msgs::msg::HandLandmarks>(
         output_topic, 10);
+
+    state_publisher_ =
+        create_publisher<robot_vision_msgs::msg::HandState>(state_topic, 10);
 
     subscription_ = create_subscription<robot_vision_msgs::msg::HandLandmarks>(
         input_topic, 10,
         std::bind(&StateEstimatorNode::landmarkCallback, this,
                   std::placeholders::_1));
 
-    RCLCPP_INFO(get_logger(), "Filtering %s -> %s", input_topic.c_str(),
-                output_topic.c_str());
+    RCLCPP_INFO(get_logger(), "Filtering %s -> %s and %s", input_topic.c_str(),
+                output_topic.c_str(), state_topic.c_str());
   }
 
 private:
@@ -97,11 +121,18 @@ private:
            static_cast<std::int64_t>(stamp.nanosec);
   }
 
+  void resetDepthState() {
+    depth_filter_->reset();
+    reference_palm_scale_ = 0.0;
+    depth_reference_initialized_ = false;
+  }
+
   void resetFilters() {
     for (auto &filter : filters_) {
       filter.reset();
     }
 
+    resetDepthState();
     previous_timestamp_nanoseconds_ = 0;
     timestamp_initialized_ = false;
   }
@@ -126,7 +157,70 @@ private:
     output.landmarks.fill(0.0);
     output.hand_detected = false;
 
+    robot_vision_msgs::msg::HandState state;
+
+    state.header = input.header;
+    state.landmarks.fill(0.0);
+    state.hand_detected = false;
+    state.depth_valid = false;
+
     publisher_->publish(output);
+    state_publisher_->publish(state);
+  }
+
+  void publishState(const robot_vision_msgs::msg::HandLandmarks &landmarks,
+                    double dt, bool reinitialize_depth) {
+    robot_vision_msgs::msg::HandState state;
+
+    state.header = landmarks.header;
+    state.landmarks = landmarks.landmarks;
+    state.hand_detected = landmarks.hand_detected;
+
+    const PalmFeatures palm = PalmStateExtractor::extract(
+        landmarks.landmarks, minimum_palm_normal_z_);
+
+    state.palm_center.x = palm.center[0];
+    state.palm_center.y = palm.center[1];
+    state.palm_center.z = palm.center[2];
+
+    state.palm_normal.x = palm.normal[0];
+    state.palm_normal.y = palm.normal[1];
+    state.palm_normal.z = palm.normal[2];
+
+    state.palm_scale = palm.scale;
+
+    if (!palm.depth_valid) {
+      resetDepthState();
+      state.relative_depth = 0.0;
+      state.depth_velocity = 0.0;
+      state.depth_valid = false;
+      state_publisher_->publish(state);
+      return;
+    }
+
+    if (reinitialize_depth || !depth_reference_initialized_) {
+      resetDepthState();
+      reference_palm_scale_ = palm.scale;
+      depth_reference_initialized_ = true;
+      depth_filter_->initialize(0.0);
+
+      state.relative_depth = 0.0;
+      state.depth_velocity = 0.0;
+      state.depth_valid = true;
+      state_publisher_->publish(state);
+      return;
+    }
+
+    const double scale_ratio = palm.scale / reference_palm_scale_;
+    const double scale_change = std::abs(scale_ratio - 1.0);
+    const double measured_depth =
+        scale_change <= depth_scale_deadband_ ? 0.0 : std::log(scale_ratio);
+
+    state.relative_depth = depth_filter_->update(measured_depth, dt);
+    state.depth_velocity = depth_filter_->velocity();
+    state.depth_valid = true;
+
+    state_publisher_->publish(state);
   }
 
   void landmarkCallback(
@@ -162,6 +256,7 @@ private:
       timestamp_initialized_ = timestamp_nanoseconds > 0;
 
       publisher_->publish(output);
+      publishState(output, minimum_dt_, true);
       return;
     }
 
@@ -179,6 +274,7 @@ private:
       previous_timestamp_nanoseconds_ = timestamp_nanoseconds;
 
       publisher_->publish(output);
+      publishState(output, minimum_dt_, true);
       return;
     }
 
@@ -192,6 +288,7 @@ private:
     previous_timestamp_nanoseconds_ = timestamp_nanoseconds;
 
     publisher_->publish(output);
+    publishState(output, dt, false);
   }
 
   double process_noise_;
@@ -200,14 +297,23 @@ private:
   double initial_velocity_variance_;
   double minimum_dt_;
   double maximum_dt_;
+  double depth_scale_deadband_;
+  double minimum_palm_normal_z_;
 
   std::vector<ConstantVelocityKalmanFilter> filters_;
+  std::unique_ptr<ConstantVelocityKalmanFilter> depth_filter_;
+
+  double reference_palm_scale_{0.0};
+  bool depth_reference_initialized_{false};
 
   std::int64_t previous_timestamp_nanoseconds_{0};
   bool timestamp_initialized_{false};
 
   rclcpp::Publisher<robot_vision_msgs::msg::HandLandmarks>::SharedPtr
       publisher_;
+
+  rclcpp::Publisher<robot_vision_msgs::msg::HandState>::SharedPtr
+      state_publisher_;
 
   rclcpp::Subscription<robot_vision_msgs::msg::HandLandmarks>::SharedPtr
       subscription_;

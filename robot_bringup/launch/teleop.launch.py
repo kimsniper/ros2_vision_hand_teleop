@@ -91,14 +91,14 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'arm_control_mode',
-            default_value='cartesian_delta',
+            default_value='cartesian',
             choices=[
                 'cartesian',
                 'cartesian_delta'
             ],
             description=(
-                'Select cartesian or cartesian_delta '
-                'arm control'
+                'Select primary cartesian or secondary '
+                'cartesian_delta arm control'
             )
         ),
         state_estimator_node,

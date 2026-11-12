@@ -157,6 +157,108 @@ The timestamped message contains 63 `float64` landmark values and an explicit de
 right hand: 21 landmarks × x/y/z = 63 values
 ```
 
+#### Depth Estimation
+
+The state estimator derives camera-depth motion from apparent palm scale.
+MediaPipe landmark `z` is not used directly as robot depth because it is
+relative to the hand geometry and is not a stable metric camera distance.
+
+`PalmStateExtractor` calculates:
+
+- palm center from landmarks `0`, `5`, `9`, `13`, and `17`;
+- robust palm scale from four palm distances;
+- normalized palm normal;
+- orientation-gated depth validity.
+
+The depth measurement is relative to the first valid palm scale:
+
+```text
+relative_depth = log(current_palm_scale / reference_palm_scale)
+```
+
+Positive relative depth means the hand moved toward the camera.
+Negative relative depth means it moved away.
+
+```text
+MediaPipe landmarks
+    |
+    v
+63 coordinate Kalman filters
+    |
+    v
+PalmStateExtractor
+    |-- palm center
+    |-- palm scale
+    |-- palm normal
+    `-- depth validity
+    |
+    v
+Relative-depth Kalman filter
+    |-- relative depth
+    `-- depth velocity
+    |
+    v
+/hand/state
+    |-- primary Cartesian pose control
+    `-- secondary Cartesian-delta control
+```
+
+The estimator publishes `robot_vision_msgs/msg/HandState` on
+`/hand/state`. It contains filtered landmarks, palm geometry, relative
+depth, depth velocity, and depth validity.
+
+Depth is disabled when the palm is strongly edge-on. Detection loss,
+invalid geometry, or stale timestamps reset the depth reference and filter.
+
+##### State-estimation parameters
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `depth_scale_deadband` | `0.03` | Ignores palm-scale changes of 3% or less |
+| `minimum_palm_normal_z` | `0.70` | Rejects strongly edge-on palm orientations |
+| `process_noise` | `0.1` | Allows estimated position and velocity to change |
+| `measurement_noise` | `0.01` | Controls trust in measurements |
+| `minimum_dt` | `0.001 s` | Protects against very small update intervals |
+| `maximum_dt` | `0.5 s` | Reinitializes after stale measurements |
+
+##### Primary Cartesian pose control
+
+```text
+robot x = reference x + relative depth * workspace_x_scale
+robot y = reference y - horizontal palm offset * workspace_y_scale
+robot z = reference z - vertical palm offset * workspace_z_scale
+```
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `workspace_x_scale` | `0.30` | Converts relative depth to robot x displacement |
+| `maximum_x_offset` | `0.15 m` | Limits forward and backward displacement |
+| `reacquisition_samples` | `5` | Valid states required for calibration |
+
+Initial calibration and reacquisition average five consecutive valid palm
+centers. No Cartesian target is published during this calibration window.
+Detection loss or invalid depth resets the pending calibration.
+
+##### Secondary Cartesian-delta control
+
+```text
+linear.x = depth_velocity * depth_velocity_scale
+```
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `depth_velocity_scale` | `0.30` | Converts depth velocity to robot x motion |
+| `maximum_depth_velocity` | `0.10 m/s` | Limits depth velocity |
+
+Invalid depth or tracking loss immediately produces a zero stop.
+
+Inspect the estimated state with:
+
+```bash
+ros2 topic echo /hand/state
+ros2 topic hz /hand/state
+```
+
 ### Hand Teleoperation
 
 `robot_teleop` maps MediaPipe landmarks to the Schunk SVH hand controller.
@@ -257,6 +359,7 @@ cartesian_delta
 |---|---|---|
 | `/hand/landmarks` | `robot_vision_msgs/msg/HandLandmarks` | Raw timestamped MediaPipe landmarks for the right hand |
 | `/hand/landmarks/filtered` | `robot_vision_msgs/msg/HandLandmarks` | Kalman-filtered landmarks used by teleoperation |
+| `/hand/state` | `robot_vision_msgs/msg/HandState` | Estimated palm geometry, relative depth, and depth velocity |
 | `/arm/cartesian_target` | `geometry_msgs/msg/PoseStamped` | Absolute Cartesian arm target |
 | `/arm/cartesian_delta` | `geometry_msgs/msg/TwistStamped` | Cartesian arm increment |
 | `/arm_trajectory_controller/follow_joint_trajectory` | `control_msgs/action/FollowJointTrajectory` | Arm trajectory action |

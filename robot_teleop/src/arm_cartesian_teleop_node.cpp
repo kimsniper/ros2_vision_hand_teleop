@@ -27,7 +27,7 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "robot_vision_msgs/msg/hand_landmarks.hpp"
+#include "robot_vision_msgs/msg/hand_state.hpp"
 
 class ArmCartesianTeleopNode : public rclcpp::Node {
 public:
@@ -35,10 +35,14 @@ public:
 
   ArmCartesianTeleopNode()
       : Node("arm_cartesian_teleop_node"), latest_palm_center_{0.0, 0.0, 0.0},
-        calibrated_palm_center_{0.0, 0.0, 0.0}, has_latest_palm_center_(false),
+        calibrated_palm_center_{0.0, 0.0, 0.0}, reacquisition_palm_sum_{0.0,
+                                                                        0.0,
+                                                                        0.0},
+        latest_relative_depth_(0.0), reacquisition_sample_count_(0),
+        has_latest_palm_center_(false), depth_valid_(false),
         calibrated_(false) {
-    const auto landmarks_topic = declare_parameter<std::string>(
-        "landmarks_topic", "/hand/landmarks/filtered");
+    const auto state_topic =
+        declare_parameter<std::string>("state_topic", "/hand/state");
 
     const auto target_topic =
         declare_parameter<std::string>("target_topic", "/arm/cartesian_target");
@@ -50,9 +54,15 @@ public:
     const double publish_rate_hz =
         declare_parameter<double>("publish_rate_hz", 10.0);
 
+    workspace_x_scale_ = declare_parameter<double>("workspace_x_scale", 0.30);
+
     workspace_y_scale_ = declare_parameter<double>("workspace_y_scale", 0.60);
 
     workspace_z_scale_ = declare_parameter<double>("workspace_z_scale", 0.50);
+
+    maximum_x_offset_ = declare_parameter<double>("maximum_x_offset", 0.15);
+
+    reacquisition_samples_ = declare_parameter<int>("reacquisition_samples", 5);
 
     maximum_y_offset_ = declare_parameter<double>("maximum_y_offset", 0.25);
 
@@ -83,78 +93,100 @@ public:
       throw std::invalid_argument("publish_rate_hz must be positive");
     }
 
+    if (workspace_x_scale_ <= 0.0) {
+      throw std::invalid_argument("workspace_x_scale must be positive");
+    }
+
+    if (maximum_x_offset_ <= 0.0) {
+      throw std::invalid_argument("maximum_x_offset must be positive");
+    }
+
+    if (reacquisition_samples_ <= 0) {
+      throw std::invalid_argument("reacquisition_samples must be positive");
+    }
+
     target_publisher_ =
         create_publisher<geometry_msgs::msg::PoseStamped>(target_topic, 10);
 
-    landmark_subscription_ =
-        create_subscription<robot_vision_msgs::msg::HandLandmarks>(
-            landmarks_topic, 10,
-            std::bind(&ArmCartesianTeleopNode::landmarkCallback, this,
+    state_subscription_ =
+        create_subscription<robot_vision_msgs::msg::HandState>(
+            state_topic, 10,
+            std::bind(&ArmCartesianTeleopNode::stateCallback, this,
                       std::placeholders::_1));
 
     timer_ = create_wall_timer(
         std::chrono::duration<double>(1.0 / publish_rate_hz),
         std::bind(&ArmCartesianTeleopNode::publishTarget, this));
 
-    RCLCPP_INFO(get_logger(), "Cartesian arm teleop ready: %s -> %s",
-                landmarks_topic.c_str(), target_topic.c_str());
+    RCLCPP_INFO(get_logger(), "3D Cartesian arm teleop ready: %s -> %s",
+                state_topic.c_str(), target_topic.c_str());
   }
 
 private:
-  static Point getPoint(const std::vector<double> &data, std::size_t index) {
-    const std::size_t offset = index * 3U;
-
-    return {data[offset], data[offset + 1U], data[offset + 2U]};
-  }
-
-  static Point palmCenter(const std::vector<double> &data) {
-    static constexpr std::array<std::size_t, 5> palm_indices = {0U, 5U, 9U, 13U,
-                                                                17U};
-
-    Point center{0.0, 0.0, 0.0};
-
-    for (const std::size_t index : palm_indices) {
-      const Point landmark = getPoint(data, index);
-
-      center[0] += landmark[0];
-      center[1] += landmark[1];
-      center[2] += landmark[2];
-    }
-
-    constexpr double landmark_count = 5.0;
-
-    center[0] /= landmark_count;
-    center[1] /= landmark_count;
-    center[2] /= landmark_count;
-
-    return center;
+  void resetReacquisition() {
+    reacquisition_palm_sum_ = {0.0, 0.0, 0.0};
+    reacquisition_sample_count_ = 0;
+    has_latest_palm_center_ = false;
   }
 
   void resetTracking() {
-    has_latest_palm_center_ = false;
+    latest_relative_depth_ = 0.0;
+    depth_valid_ = false;
     calibrated_ = false;
+    resetReacquisition();
   }
 
-  void landmarkCallback(
-      const robot_vision_msgs::msg::HandLandmarks::SharedPtr message) {
+  void
+  stateCallback(const robot_vision_msgs::msg::HandState::SharedPtr message) {
     if (!message->hand_detected) {
       resetTracking();
       return;
     }
 
-    const std::vector<double> hand_data(message->landmarks.begin(),
-                                        message->landmarks.end());
-
-    for (const double value : hand_data) {
-      if (!std::isfinite(value)) {
-        RCLCPP_WARN(get_logger(), "Ignoring non-finite landmark data");
-        resetTracking();
-        return;
-      }
+    if (!message->depth_valid || !std::isfinite(message->relative_depth) ||
+        !std::isfinite(message->palm_center.x) ||
+        !std::isfinite(message->palm_center.y) ||
+        !std::isfinite(message->palm_center.z)) {
+      resetTracking();
+      return;
     }
 
-    latest_palm_center_ = palmCenter(hand_data);
+    const Point palm_center = {
+        message->palm_center.x,
+        message->palm_center.y,
+        message->palm_center.z,
+    };
 
+    latest_relative_depth_ = message->relative_depth;
+    depth_valid_ = true;
+
+    if (!calibrated_ && !has_latest_palm_center_) {
+      for (std::size_t axis = 0; axis < palm_center.size(); ++axis) {
+        reacquisition_palm_sum_[axis] += palm_center[axis];
+      }
+
+      ++reacquisition_sample_count_;
+
+      if (reacquisition_sample_count_ < reacquisition_samples_) {
+        return;
+      }
+
+      for (std::size_t axis = 0; axis < palm_center.size(); ++axis) {
+        latest_palm_center_[axis] =
+            reacquisition_palm_sum_[axis] /
+            static_cast<double>(reacquisition_sample_count_);
+      }
+
+      has_latest_palm_center_ = true;
+
+      RCLCPP_INFO(get_logger(),
+                  "Stable Cartesian calibration acquired from %d states",
+                  reacquisition_sample_count_);
+
+      return;
+    }
+
+    latest_palm_center_ = palm_center;
     has_latest_palm_center_ = true;
   }
 
@@ -179,19 +211,22 @@ private:
 
     last_target_ = calibrated_pose_;
     calibrated_ = true;
+    reacquisition_palm_sum_ = {0.0, 0.0, 0.0};
+    reacquisition_sample_count_ = 0;
 
     RCLCPP_INFO(get_logger(),
-                "Cartesian arm teleop calibrated at "
-                "palm=(%.3f, %.3f), "
+                "3D Cartesian arm teleop calibrated at "
+                "palm=(%.3f, %.3f), depth=%.3f, "
                 "reference=(%.3f, %.3f, %.3f)",
                 calibrated_palm_center_[0], calibrated_palm_center_[1],
-                reference_x_, reference_y_, reference_z_);
+                latest_relative_depth_, reference_x_, reference_y_,
+                reference_z_);
 
     return true;
   }
 
   void publishTarget() {
-    if (!has_latest_palm_center_) {
+    if (!has_latest_palm_center_ || !depth_valid_) {
       return;
     }
 
@@ -205,6 +240,10 @@ private:
     const double palm_offset_y =
         latest_palm_center_[1] - calibrated_palm_center_[1];
 
+    const double x_offset =
+        std::clamp(latest_relative_depth_ * workspace_x_scale_,
+                   -maximum_x_offset_, maximum_x_offset_);
+
     const double y_offset = std::clamp(-palm_offset_x * workspace_y_scale_,
                                        -maximum_y_offset_, maximum_y_offset_);
 
@@ -215,9 +254,14 @@ private:
 
     target.header.stamp = now();
 
+    target.pose.position.x = calibrated_pose_.pose.position.x + x_offset;
+
     target.pose.position.y = calibrated_pose_.pose.position.y + y_offset;
 
     target.pose.position.z = calibrated_pose_.pose.position.z + z_offset;
+
+    const double x_change =
+        std::abs(target.pose.position.x - last_target_.pose.position.x);
 
     const double y_change =
         std::abs(target.pose.position.y - last_target_.pose.position.y);
@@ -225,7 +269,8 @@ private:
     const double z_change =
         std::abs(target.pose.position.z - last_target_.pose.position.z);
 
-    if (y_change < minimum_target_change_ &&
+    if (x_change < minimum_target_change_ &&
+        y_change < minimum_target_change_ &&
         z_change < minimum_target_change_) {
       return;
     }
@@ -237,8 +282,11 @@ private:
   std::string base_frame_;
   std::string tip_link_;
 
+  double workspace_x_scale_;
   double workspace_y_scale_;
   double workspace_z_scale_;
+  double maximum_x_offset_;
+  int reacquisition_samples_;
   double maximum_y_offset_;
   double maximum_z_offset_;
   double minimum_target_change_;
@@ -253,18 +301,22 @@ private:
 
   Point latest_palm_center_;
   Point calibrated_palm_center_;
+  Point reacquisition_palm_sum_;
+  double latest_relative_depth_;
+  int reacquisition_sample_count_;
 
   geometry_msgs::msg::PoseStamped calibrated_pose_;
   geometry_msgs::msg::PoseStamped last_target_;
 
   bool has_latest_palm_center_;
+  bool depth_valid_;
   bool calibrated_;
 
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr
       target_publisher_;
 
-  rclcpp::Subscription<robot_vision_msgs::msg::HandLandmarks>::SharedPtr
-      landmark_subscription_;
+  rclcpp::Subscription<robot_vision_msgs::msg::HandState>::SharedPtr
+      state_subscription_;
 
   rclcpp::TimerBase::SharedPtr timer_;
 };

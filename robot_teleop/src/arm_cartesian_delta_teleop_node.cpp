@@ -27,19 +27,19 @@
 
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "robot_vision_msgs/msg/hand_landmarks.hpp"
+#include "robot_vision_msgs/msg/hand_state.hpp"
 
 class ArmCartesianDeltaTeleopNode : public rclcpp::Node {
 public:
   using Point = std::array<double, 3>;
 
   ArmCartesianDeltaTeleopNode()
-      : Node("arm_cartesian_delta_teleop_node"),
-        latest_palm_center_{0.0, 0.0, 0.0}, filtered_cartesian_delta_{0.0, 0.0,
-                                                                      0.0},
-        has_latest_palm_center_(false) {
-    const auto landmarks_topic = declare_parameter<std::string>(
-        "landmarks_topic", "/hand/landmarks/filtered");
+      : Node("arm_cartesian_delta_teleop_node"), latest_palm_center_{0.0, 0.0,
+                                                                     0.0},
+        filtered_cartesian_delta_{0.0, 0.0, 0.0}, latest_depth_velocity_(0.0),
+        has_latest_palm_center_(false), depth_valid_(false) {
+    const auto state_topic =
+        declare_parameter<std::string>("state_topic", "/hand/state");
 
     const auto cartesian_delta_topic = declare_parameter<std::string>(
         "cartesian_delta_topic", "/arm/cartesian_delta");
@@ -50,6 +50,12 @@ public:
     lateral_gain_ = declare_parameter<double>("lateral_gain", 0.08);
 
     vertical_gain_ = declare_parameter<double>("vertical_gain", 0.08);
+
+    depth_velocity_scale_ =
+        declare_parameter<double>("depth_velocity_scale", 0.30);
+
+    maximum_depth_velocity_ =
+        declare_parameter<double>("maximum_depth_velocity", 0.10);
 
     screen_center_x_ = declare_parameter<double>("screen_center_x", 0.50);
 
@@ -66,14 +72,22 @@ public:
       throw std::invalid_argument("publish_rate_hz must be positive");
     }
 
+    if (depth_velocity_scale_ <= 0.0) {
+      throw std::invalid_argument("depth_velocity_scale must be positive");
+    }
+
+    if (maximum_depth_velocity_ <= 0.0) {
+      throw std::invalid_argument("maximum_depth_velocity must be positive");
+    }
+
     cartesian_delta_publisher_ =
         create_publisher<geometry_msgs::msg::TwistStamped>(
             cartesian_delta_topic, 10);
 
-    landmark_subscription_ =
-        create_subscription<robot_vision_msgs::msg::HandLandmarks>(
-            landmarks_topic, 10,
-            std::bind(&ArmCartesianDeltaTeleopNode::landmarkCallback, this,
+    state_subscription_ =
+        create_subscription<robot_vision_msgs::msg::HandState>(
+            state_topic, 10,
+            std::bind(&ArmCartesianDeltaTeleopNode::stateCallback, this,
                       std::placeholders::_1));
 
     timer_ = create_wall_timer(
@@ -81,69 +95,45 @@ public:
         std::bind(&ArmCartesianDeltaTeleopNode::publishCartesianDelta, this));
 
     RCLCPP_INFO(get_logger(),
-                "Screen-centered Cartesian delta arm teleop ready: %s -> %s",
-                landmarks_topic.c_str(), cartesian_delta_topic.c_str());
+                "3D screen-centered Cartesian delta arm teleop ready: "
+                "%s -> %s",
+                state_topic.c_str(), cartesian_delta_topic.c_str());
   }
 
 private:
-  static Point getPoint(const std::vector<double> &data, std::size_t index) {
-    const std::size_t offset = index * 3U;
-
-    return {data[offset], data[offset + 1U], data[offset + 2U]};
-  }
-
-  static Point palmCenter(const std::vector<double> &data) {
-    static constexpr std::array<std::size_t, 5> palm_indices = {0U, 5U, 9U, 13U,
-                                                                17U};
-
-    Point center{0.0, 0.0, 0.0};
-
-    for (const std::size_t index : palm_indices) {
-      const Point landmark = getPoint(data, index);
-
-      center[0] += landmark[0];
-      center[1] += landmark[1];
-      center[2] += landmark[2];
-    }
-
-    constexpr double palm_landmark_count =
-        static_cast<double>(palm_indices.size());
-
-    center[0] /= palm_landmark_count;
-    center[1] /= palm_landmark_count;
-    center[2] /= palm_landmark_count;
-
-    return center;
-  }
-
   void resetTracking() {
+    latest_depth_velocity_ = 0.0;
     has_latest_palm_center_ = false;
+    depth_valid_ = false;
     filtered_cartesian_delta_ = {0.0, 0.0, 0.0};
     publishStop();
   }
 
-  void landmarkCallback(
-      const robot_vision_msgs::msg::HandLandmarks::SharedPtr message) {
-    if (!message->hand_detected) {
+  void
+  stateCallback(const robot_vision_msgs::msg::HandState::SharedPtr message) {
+    if (!message->hand_detected || !message->depth_valid) {
       resetTracking();
       return;
     }
 
-    const std::vector<double> hand_data(message->landmarks.begin(),
-                                        message->landmarks.end());
-
-    for (const double value : hand_data) {
-      if (!std::isfinite(value)) {
-        RCLCPP_WARN(get_logger(), "Ignoring non-finite landmark data");
-
-        resetTracking();
-        return;
-      }
+    if (!std::isfinite(message->palm_center.x) ||
+        !std::isfinite(message->palm_center.y) ||
+        !std::isfinite(message->palm_center.z) ||
+        !std::isfinite(message->depth_velocity)) {
+      RCLCPP_WARN(get_logger(), "Ignoring non-finite hand state");
+      resetTracking();
+      return;
     }
 
-    latest_palm_center_ = palmCenter(hand_data);
+    latest_palm_center_ = {
+        message->palm_center.x,
+        message->palm_center.y,
+        message->palm_center.z,
+    };
 
+    latest_depth_velocity_ = message->depth_velocity;
     has_latest_palm_center_ = true;
+    depth_valid_ = true;
   }
 
   static double applyDeadzone(double value, double deadzone) {
@@ -189,7 +179,7 @@ private:
   }
 
   void publishCartesianDelta() {
-    if (!has_latest_palm_center_) {
+    if (!has_latest_palm_center_ || !depth_valid_) {
       publishStop();
       return;
     }
@@ -202,6 +192,12 @@ private:
 
     const double normalized_y = applyDeadzone(screen_error_y, screen_deadzone_);
 
+    const double depth_velocity =
+        std::clamp(latest_depth_velocity_ * depth_velocity_scale_,
+                   -maximum_depth_velocity_, maximum_depth_velocity_);
+
+    const double delta_x = filterValue(0U, depth_velocity);
+
     const double delta_y = filterValue(1U, -normalized_x * lateral_gain_);
 
     const double delta_z = filterValue(2U, -normalized_y * vertical_gain_);
@@ -211,7 +207,7 @@ private:
     command.header.stamp = now();
     command.header.frame_id = "link_0";
 
-    command.twist.linear.x = 0.0;
+    command.twist.linear.x = delta_x;
     command.twist.linear.y = delta_y;
     command.twist.linear.z = delta_z;
 
@@ -224,6 +220,8 @@ private:
 
   double lateral_gain_;
   double vertical_gain_;
+  double depth_velocity_scale_;
+  double maximum_depth_velocity_;
   double screen_center_x_;
   double screen_center_y_;
   double screen_deadzone_;
@@ -232,14 +230,16 @@ private:
 
   Point latest_palm_center_;
   Point filtered_cartesian_delta_;
+  double latest_depth_velocity_;
 
   bool has_latest_palm_center_;
+  bool depth_valid_;
 
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr
       cartesian_delta_publisher_;
 
-  rclcpp::Subscription<robot_vision_msgs::msg::HandLandmarks>::SharedPtr
-      landmark_subscription_;
+  rclcpp::Subscription<robot_vision_msgs::msg::HandState>::SharedPtr
+      state_subscription_;
 
   rclcpp::TimerBase::SharedPtr timer_;
 };
