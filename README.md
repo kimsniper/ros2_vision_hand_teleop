@@ -182,22 +182,22 @@ Negative relative depth means it moved away.
 ```text
 MediaPipe landmarks
     |
-    v
+
 63 coordinate Kalman filters
     |
-    v
+    
 PalmStateExtractor
     |-- palm center
     |-- palm scale
     |-- palm normal
     `-- depth validity
     |
-    v
+    
 Relative-depth Kalman filter
     |-- relative depth
     `-- depth velocity
     |
-    v
+    
 /hand/state
     |-- primary Cartesian pose control
     `-- secondary Cartesian-delta control
