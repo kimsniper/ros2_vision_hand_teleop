@@ -27,14 +27,16 @@ class ConstantVelocityKalmanFilter {
 public:
   ConstantVelocityKalmanFilter(double process_noise, double measurement_noise,
                                double initial_position_variance,
-                               double initial_velocity_variance)
+                               double initial_velocity_variance,
+                               double velocity_damping = 1.0)
       : process_noise_(requirePositive(process_noise, "process_noise")),
         measurement_noise_(
             requirePositive(measurement_noise, "measurement_noise")),
         initial_position_variance_(requirePositive(
             initial_position_variance, "initial_position_variance")),
         initial_velocity_variance_(requirePositive(
-            initial_velocity_variance, "initial_velocity_variance")) {
+            initial_velocity_variance, "initial_velocity_variance")),
+        velocity_damping_(requireDamping(velocity_damping)) {
     reset();
   }
 
@@ -60,8 +62,9 @@ public:
       return position_;
     }
 
-    const double predicted_position = position_ + velocity_ * dt;
-    const double predicted_velocity = velocity_;
+    const double predicted_velocity = velocity_ * velocity_damping_;
+
+    const double predicted_position = position_ + predicted_velocity * dt;
 
     const double dt_squared = dt * dt;
     const double dt_cubed = dt_squared * dt;
@@ -138,10 +141,21 @@ private:
     return value;
   }
 
+  static double requireDamping(double value) {
+    requireFinite(value, "velocity_damping");
+
+    if (value < 0.0 || value > 1.0) {
+      throw std::invalid_argument("velocity_damping must be within [0, 1]");
+    }
+
+    return value;
+  }
+
   double process_noise_;
   double measurement_noise_;
   double initial_position_variance_;
   double initial_velocity_variance_;
+  double velocity_damping_;
 
   double position_;
   double velocity_;

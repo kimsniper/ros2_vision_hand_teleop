@@ -60,13 +60,44 @@ public:
     depth_scale_deadband_ =
         declarePositiveParameter("depth_scale_deadband", 0.03);
 
+    depth_process_noise_ =
+        declarePositiveParameter("depth_process_noise", 0.01);
+
+    depth_measurement_noise_ =
+        declarePositiveParameter("depth_measurement_noise", 0.05);
+
+    depth_initial_position_variance_ =
+        declarePositiveParameter("depth_initial_position_variance", 0.10);
+
+    depth_initial_velocity_variance_ =
+        declarePositiveParameter("depth_initial_velocity_variance", 0.10);
+
+    depth_velocity_damping_ =
+        declare_parameter<double>("depth_velocity_damping", 0.85);
+
     minimum_palm_normal_z_ =
         declare_parameter<double>("minimum_palm_normal_z", 0.70);
+
+    maximum_missed_frames_ =
+        declare_parameter<int>("maximum_missed_frames", 10);
+
+    depth_velocity_deadband_ =
+        declarePositiveParameter("depth_velocity_deadband", 0.01);
 
     if (!std::isfinite(minimum_palm_normal_z_) ||
         minimum_palm_normal_z_ < 0.0 || minimum_palm_normal_z_ > 1.0) {
       throw std::invalid_argument(
           "minimum_palm_normal_z must be within [0, 1]");
+    }
+
+    if (maximum_missed_frames_ < 0) {
+      throw std::invalid_argument("maximum_missed_frames must not be negative");
+    }
+
+    if (!std::isfinite(depth_velocity_damping_) ||
+        depth_velocity_damping_ < 0.0 || depth_velocity_damping_ > 1.0) {
+      throw std::invalid_argument("depth_velocity_damping must be "
+                                  "within [0, 1]");
     }
 
     if (minimum_dt_ > maximum_dt_) {
@@ -82,8 +113,9 @@ public:
     }
 
     depth_filter_ = std::make_unique<ConstantVelocityKalmanFilter>(
-        process_noise_, measurement_noise_, initial_position_variance_,
-        initial_velocity_variance_);
+        depth_process_noise_, depth_measurement_noise_,
+        depth_initial_position_variance_, depth_initial_velocity_variance_,
+        depth_velocity_damping_);
 
     publisher_ = create_publisher<robot_vision_msgs::msg::HandLandmarks>(
         output_topic, 10);
@@ -127,12 +159,41 @@ private:
     depth_reference_initialized_ = false;
   }
 
+  void resetOrientationState() {
+    previous_palm_orientation_ = {0.0, 0.0, 0.0, 1.0};
+    orientation_initialized_ = false;
+  }
+
+  std::array<double, 4>
+  alignOrientation(const std::array<double, 4> &orientation) {
+    std::array<double, 4> aligned = orientation;
+
+    if (orientation_initialized_) {
+      const double dot = previous_palm_orientation_[0] * aligned[0] +
+                         previous_palm_orientation_[1] * aligned[1] +
+                         previous_palm_orientation_[2] * aligned[2] +
+                         previous_palm_orientation_[3] * aligned[3];
+
+      if (dot < 0.0) {
+        for (double &value : aligned) {
+          value = -value;
+        }
+      }
+    }
+
+    previous_palm_orientation_ = aligned;
+    orientation_initialized_ = true;
+
+    return aligned;
+  }
+
   void resetFilters() {
     for (auto &filter : filters_) {
       filter.reset();
     }
 
     resetDepthState();
+    resetOrientationState();
     previous_timestamp_nanoseconds_ = 0;
     timestamp_initialized_ = false;
   }
@@ -162,6 +223,7 @@ private:
     state.header = input.header;
     state.landmarks.fill(0.0);
     state.hand_detected = false;
+    state.orientation_valid = false;
     state.depth_valid = false;
 
     publisher_->publish(output);
@@ -187,13 +249,29 @@ private:
     state.palm_normal.y = palm.normal[1];
     state.palm_normal.z = palm.normal[2];
 
+    std::array<double, 4> orientation = palm.orientation;
+
+    if (palm.orientation_valid) {
+      orientation = alignOrientation(orientation);
+    } else {
+      resetOrientationState();
+    }
+
+    state.palm_orientation.x = orientation[0];
+    state.palm_orientation.y = orientation[1];
+    state.palm_orientation.z = orientation[2];
+    state.palm_orientation.w = orientation[3];
+    state.orientation_valid = palm.orientation_valid;
+
     state.palm_scale = palm.scale;
 
     if (!palm.depth_valid) {
-      resetDepthState();
-      state.relative_depth = 0.0;
+      state.relative_depth =
+          depth_reference_initialized_ ? depth_filter_->position() : 0.0;
+
       state.depth_velocity = 0.0;
       state.depth_valid = false;
+
       state_publisher_->publish(state);
       return;
     }
@@ -212,12 +290,24 @@ private:
     }
 
     const double scale_ratio = palm.scale / reference_palm_scale_;
-    const double scale_change = std::abs(scale_ratio - 1.0);
-    const double measured_depth =
-        scale_change <= depth_scale_deadband_ ? 0.0 : std::log(scale_ratio);
+
+    const double raw_depth = std::log(scale_ratio);
+
+    double measured_depth = 0.0;
+
+    if (std::abs(raw_depth) > depth_scale_deadband_) {
+      measured_depth =
+          std::copysign(std::abs(raw_depth) - depth_scale_deadband_, raw_depth);
+    }
 
     state.relative_depth = depth_filter_->update(measured_depth, dt);
+
     state.depth_velocity = depth_filter_->velocity();
+
+    if (std::abs(state.depth_velocity) < depth_velocity_deadband_) {
+      state.depth_velocity = 0.0;
+    }
+
     state.depth_valid = true;
 
     state_publisher_->publish(state);
@@ -226,10 +316,21 @@ private:
   void landmarkCallback(
       const robot_vision_msgs::msg::HandLandmarks::SharedPtr message) {
     if (!message->hand_detected) {
-      resetFilters();
+      ++missed_frame_count_;
+
       publishUndetected(*message);
+
+      if (missed_frame_count_ > maximum_missed_frames_) {
+        resetFilters();
+        missed_frame_count_ = 0;
+      }
+
       return;
     }
+
+    const bool recovered_from_short_loss = missed_frame_count_ > 0;
+
+    missed_frame_count_ = 0;
 
     if (!landmarksAreFinite(message->landmarks)) {
       RCLCPP_WARN(get_logger(),
@@ -263,8 +364,13 @@ private:
     const std::int64_t elapsed_nanoseconds =
         timestamp_nanoseconds - previous_timestamp_nanoseconds_;
 
-    const double elapsed_seconds = static_cast<double>(elapsed_nanoseconds) /
-                                   static_cast<double>(kNanosecondsPerSecond);
+    double elapsed_seconds = static_cast<double>(elapsed_nanoseconds) /
+                             static_cast<double>(kNanosecondsPerSecond);
+
+    if (recovered_from_short_loss && std::isfinite(elapsed_seconds) &&
+        elapsed_seconds > maximum_dt_) {
+      elapsed_seconds = maximum_dt_;
+    }
 
     if (!std::isfinite(elapsed_seconds) || elapsed_seconds <= 0.0 ||
         elapsed_seconds > maximum_dt_) {
@@ -298,13 +404,24 @@ private:
   double minimum_dt_;
   double maximum_dt_;
   double depth_scale_deadband_;
+  double depth_process_noise_;
+  double depth_measurement_noise_;
+  double depth_initial_position_variance_;
+  double depth_initial_velocity_variance_;
+  double depth_velocity_damping_;
   double minimum_palm_normal_z_;
+  double depth_velocity_deadband_;
+  int maximum_missed_frames_;
+  int missed_frame_count_{0};
 
   std::vector<ConstantVelocityKalmanFilter> filters_;
   std::unique_ptr<ConstantVelocityKalmanFilter> depth_filter_;
 
   double reference_palm_scale_{0.0};
   bool depth_reference_initialized_{false};
+
+  std::array<double, 4> previous_palm_orientation_{0.0, 0.0, 0.0, 1.0};
+  bool orientation_initialized_{false};
 
   std::int64_t previous_timestamp_nanoseconds_{0};
   bool timestamp_initialized_{false};

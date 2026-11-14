@@ -30,7 +30,9 @@ struct PalmFeatures {
 
   Point center;
   Point normal;
+  std::array<double, 4> orientation;
   double scale;
+  bool orientation_valid;
   bool depth_valid;
 };
 
@@ -78,20 +80,34 @@ public:
 
     const Point along_palm = subtract(middle_mcp, wrist);
 
-    const Point normal = normalize(cross(across_palm, along_palm));
+    const Point palm_x = normalize(across_palm);
+
+    const Point orthogonal_palm_y =
+        subtract(along_palm, multiply(palm_x, dot(along_palm, palm_x)));
+
+    const Point palm_y = normalize(orthogonal_palm_y);
+
+    const Point normal = normalize(cross(palm_x, palm_y));
 
     const bool valid_scale = std::isfinite(scale) && scale > kMinimumMagnitude;
 
+    const bool valid_palm_x = norm(palm_x) > kMinimumMagnitude;
+
+    const bool valid_palm_y = norm(palm_y) > kMinimumMagnitude;
+
     const bool valid_normal = norm(normal) > kMinimumMagnitude;
 
-    const bool depth_valid = valid_scale && valid_normal &&
+    const bool orientation_valid = valid_palm_x && valid_palm_y && valid_normal;
+
+    const std::array<double, 4> orientation =
+        orientation_valid ? quaternionFromBasis(palm_x, palm_y, normal)
+                          : std::array<double, 4>{0.0, 0.0, 0.0, 1.0};
+
+    const bool depth_valid = valid_scale && orientation_valid &&
                              std::abs(normal[2]) >= minimum_palm_normal_z;
 
     return {
-        center,
-        normal,
-        scale,
-        depth_valid,
+        center, normal, orientation, scale, orientation_valid, depth_valid,
     };
   }
 
@@ -133,6 +149,14 @@ private:
     };
   }
 
+  static Point multiply(const Point &value, double scale) {
+    return {
+        value[0] * scale,
+        value[1] * scale,
+        value[2] * scale,
+    };
+  }
+
   static double dot(const Point &first, const Point &second) {
     return first[0] * second[0] + first[1] * second[1] + first[2] * second[2];
   }
@@ -165,6 +189,71 @@ private:
         value[1] / magnitude,
         value[2] / magnitude,
     };
+  }
+
+  static std::array<double, 4> quaternionFromBasis(const Point &x_axis,
+                                                   const Point &y_axis,
+                                                   const Point &z_axis) {
+    const double m00 = x_axis[0];
+    const double m01 = y_axis[0];
+    const double m02 = z_axis[0];
+    const double m10 = x_axis[1];
+    const double m11 = y_axis[1];
+    const double m12 = z_axis[1];
+    const double m20 = x_axis[2];
+    const double m21 = y_axis[2];
+    const double m22 = z_axis[2];
+
+    std::array<double, 4> quaternion;
+    const double trace = m00 + m11 + m22;
+
+    if (trace > 0.0) {
+      const double scale = 2.0 * std::sqrt(trace + 1.0);
+      quaternion = {
+          (m21 - m12) / scale,
+          (m02 - m20) / scale,
+          (m10 - m01) / scale,
+          0.25 * scale,
+      };
+    } else if (m00 > m11 && m00 > m22) {
+      const double scale = 2.0 * std::sqrt(1.0 + m00 - m11 - m22);
+      quaternion = {
+          0.25 * scale,
+          (m01 + m10) / scale,
+          (m02 + m20) / scale,
+          (m21 - m12) / scale,
+      };
+    } else if (m11 > m22) {
+      const double scale = 2.0 * std::sqrt(1.0 + m11 - m00 - m22);
+      quaternion = {
+          (m01 + m10) / scale,
+          0.25 * scale,
+          (m12 + m21) / scale,
+          (m02 - m20) / scale,
+      };
+    } else {
+      const double scale = 2.0 * std::sqrt(1.0 + m22 - m00 - m11);
+      quaternion = {
+          (m02 + m20) / scale,
+          (m12 + m21) / scale,
+          0.25 * scale,
+          (m10 - m01) / scale,
+      };
+    }
+
+    const double magnitude = std::sqrt(
+        quaternion[0] * quaternion[0] + quaternion[1] * quaternion[1] +
+        quaternion[2] * quaternion[2] + quaternion[3] * quaternion[3]);
+
+    if (!std::isfinite(magnitude) || magnitude <= kMinimumMagnitude) {
+      return {0.0, 0.0, 0.0, 1.0};
+    }
+
+    for (double &value : quaternion) {
+      value /= magnitude;
+    }
+
+    return quaternion;
   }
 };
 

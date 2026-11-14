@@ -47,24 +47,27 @@ public:
     const double publish_rate_hz =
         declare_parameter<double>("publish_rate_hz", 15.0);
 
-    lateral_gain_ = declare_parameter<double>("lateral_gain", 0.08);
+    lateral_gain_ = declare_parameter<double>("lateral_gain", 0.04);
 
-    vertical_gain_ = declare_parameter<double>("vertical_gain", 0.08);
+    vertical_gain_ = declare_parameter<double>("vertical_gain", 0.04);
 
     depth_velocity_scale_ =
-        declare_parameter<double>("depth_velocity_scale", 0.30);
+        declare_parameter<double>("depth_velocity_scale", 0.15);
+
+    enable_depth_control_ =
+        declare_parameter<bool>("enable_depth_control", false);
 
     maximum_depth_velocity_ =
-        declare_parameter<double>("maximum_depth_velocity", 0.10);
+        declare_parameter<double>("maximum_depth_velocity", 0.05);
 
     screen_center_x_ = declare_parameter<double>("screen_center_x", 0.50);
 
     screen_center_y_ = declare_parameter<double>("screen_center_y", 0.50);
 
-    screen_deadzone_ = declare_parameter<double>("screen_deadzone", 0.003);
+    screen_deadzone_ = declare_parameter<double>("screen_deadzone", 0.02);
 
     maximum_cartesian_delta_ =
-        declare_parameter<double>("max_cartesian_delta_m", 0.02);
+        declare_parameter<double>("max_cartesian_delta_m", 0.01);
 
     filter_alpha_ = declare_parameter<double>("alpha", 0.10);
 
@@ -111,7 +114,7 @@ private:
 
   void
   stateCallback(const robot_vision_msgs::msg::HandState::SharedPtr message) {
-    if (!message->hand_detected || !message->depth_valid) {
+    if (!message->hand_detected) {
       resetTracking();
       return;
     }
@@ -132,8 +135,9 @@ private:
     };
 
     latest_depth_velocity_ = message->depth_velocity;
+
     has_latest_palm_center_ = true;
-    depth_valid_ = true;
+    depth_valid_ = message->depth_valid;
   }
 
   static double applyDeadzone(double value, double deadzone) {
@@ -150,8 +154,8 @@ private:
     value =
         std::clamp(value, -maximum_cartesian_delta_, maximum_cartesian_delta_);
 
-    double filtered = filter_alpha_ * filtered_cartesian_delta_[index] +
-                      (1.0 - filter_alpha_) * value;
+    double filtered = filter_alpha_ * value +
+                      (1.0 - filter_alpha_) * filtered_cartesian_delta_[index];
 
     if (value == 0.0 && std::abs(filtered) < 0.0005) {
       filtered = 0.0;
@@ -179,7 +183,7 @@ private:
   }
 
   void publishCartesianDelta() {
-    if (!has_latest_palm_center_ || !depth_valid_) {
+    if (!has_latest_palm_center_) {
       publishStop();
       return;
     }
@@ -193,8 +197,10 @@ private:
     const double normalized_y = applyDeadzone(screen_error_y, screen_deadzone_);
 
     const double depth_velocity =
-        std::clamp(latest_depth_velocity_ * depth_velocity_scale_,
-                   -maximum_depth_velocity_, maximum_depth_velocity_);
+        enable_depth_control_ && depth_valid_
+            ? std::clamp(latest_depth_velocity_ * depth_velocity_scale_,
+                         -maximum_depth_velocity_, maximum_depth_velocity_)
+            : 0.0;
 
     const double delta_x = filterValue(0U, depth_velocity);
 
@@ -221,6 +227,7 @@ private:
   double lateral_gain_;
   double vertical_gain_;
   double depth_velocity_scale_;
+  bool enable_depth_control_;
   double maximum_depth_velocity_;
   double screen_center_x_;
   double screen_center_y_;
