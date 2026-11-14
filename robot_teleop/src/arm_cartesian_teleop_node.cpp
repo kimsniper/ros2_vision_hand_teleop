@@ -55,10 +55,14 @@ public:
     const double publish_rate_hz =
         declare_parameter<double>("publish_rate_hz", 10.0);
 
-    workspace_x_scale_ = declare_parameter<double>("workspace_x_scale", 0.15);
+    workspace_x_forward_scale_ =
+        declare_parameter<double>("workspace_x_forward_scale", 0.20);
+
+    workspace_x_backward_scale_ =
+        declare_parameter<double>("workspace_x_backward_scale", 0.45);
 
     enable_depth_control_ =
-        declare_parameter<bool>("enable_depth_control", false);
+        declare_parameter<bool>("enable_depth_control", true);
 
     workspace_y_scale_ = declare_parameter<double>("workspace_y_scale", 0.45);
 
@@ -67,7 +71,11 @@ public:
     workspace_z_upward_scale_ =
         declare_parameter<double>("workspace_z_upward_scale", 0.12);
 
-    maximum_x_offset_ = declare_parameter<double>("maximum_x_offset", 0.08);
+    maximum_x_forward_offset_ =
+        declare_parameter<double>("maximum_x_forward_offset", 0.04);
+
+    maximum_x_backward_offset_ =
+        declare_parameter<double>("maximum_x_backward_offset", 0.14);
 
     screen_center_x_ = declare_parameter<double>("screen_center_x", 0.50);
 
@@ -118,15 +126,17 @@ public:
       throw std::invalid_argument("publish_rate_hz must be positive");
     }
 
-    if (workspace_x_scale_ <= 0.0 || workspace_y_scale_ <= 0.0 ||
+    if (workspace_x_forward_scale_ <= 0.0 ||
+        workspace_x_backward_scale_ <= 0.0 || workspace_y_scale_ <= 0.0 ||
         workspace_z_scale_ <= 0.0 || workspace_z_upward_scale_ <= 0.0 ||
-        maximum_x_offset_ <= 0.0 || maximum_y_offset_ <= 0.0 ||
-        maximum_z_upward_offset_ <= 0.0 || maximum_z_downward_offset_ <= 0.0) {
+        maximum_x_forward_offset_ <= 0.0 || maximum_x_backward_offset_ <= 0.0 ||
+        maximum_y_offset_ <= 0.0 || maximum_z_upward_offset_ <= 0.0 ||
+        maximum_z_downward_offset_ <= 0.0) {
       throw std::invalid_argument("workspace scales and limits "
                                   "must be positive");
     }
 
-    if (maximum_x_offset_ <= 0.0) {
+    if (maximum_x_forward_offset_ <= 0.0 || maximum_x_backward_offset_ <= 0.0) {
       throw std::invalid_argument("maximum_x_offset must be positive");
     }
 
@@ -368,8 +378,13 @@ private:
 
     const double x_offset =
         enable_depth_control_ && depth_valid_
-            ? std::clamp(latest_relative_depth_ * workspace_x_scale_,
-                         -maximum_x_offset_, maximum_x_offset_)
+            ? (latest_relative_depth_ >= 0.0
+                   ? std::clamp(latest_relative_depth_ *
+                                    workspace_x_forward_scale_,
+                                0.0, maximum_x_forward_offset_)
+                   : -std::clamp(-latest_relative_depth_ *
+                                     workspace_x_backward_scale_,
+                                 0.0, maximum_x_backward_offset_))
             : 0.0;
 
     const double y_offset = std::clamp(-palm_offset_x * workspace_y_scale_,
@@ -478,12 +493,14 @@ private:
   std::string base_frame_;
   std::string tip_link_;
 
-  double workspace_x_scale_;
+  double workspace_x_forward_scale_;
+  double workspace_x_backward_scale_;
   bool enable_depth_control_;
   double workspace_y_scale_;
   double workspace_z_scale_;
   double workspace_z_upward_scale_;
-  double maximum_x_offset_;
+  double maximum_x_forward_offset_;
+  double maximum_x_backward_offset_;
   double screen_center_x_;
   double screen_center_y_;
   int maximum_missed_frames_;

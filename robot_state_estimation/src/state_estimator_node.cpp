@@ -61,10 +61,10 @@ public:
         declarePositiveParameter("depth_scale_deadband", 0.03);
 
     depth_process_noise_ =
-        declarePositiveParameter("depth_process_noise", 0.01);
+        declarePositiveParameter("depth_process_noise", 0.03);
 
     depth_measurement_noise_ =
-        declarePositiveParameter("depth_measurement_noise", 0.05);
+        declarePositiveParameter("depth_measurement_noise", 0.02);
 
     depth_initial_position_variance_ =
         declarePositiveParameter("depth_initial_position_variance", 0.10);
