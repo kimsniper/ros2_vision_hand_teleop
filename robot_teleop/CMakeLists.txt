@@ -5,6 +5,8 @@ find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(robot_vision_msgs REQUIRED)
+
+find_package(robot_state_estimation REQUIRED)
 find_package(std_msgs REQUIRED)
 
 add_executable(
@@ -44,6 +46,13 @@ ament_target_dependencies(
   robot_vision_msgs
   std_msgs
 )
+
+target_include_directories(
+  hand_teleop_node
+  PRIVATE
+    ${robot_state_estimation_INCLUDE_DIRS}
+)
+
 
 install(
   TARGETS

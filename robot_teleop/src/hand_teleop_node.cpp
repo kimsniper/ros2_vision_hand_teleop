@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -25,6 +26,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "robot_state_estimation/constant_velocity_kalman_filter.hpp"
 #include "robot_vision_msgs/msg/hand_landmarks.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
 
@@ -33,12 +35,63 @@ public:
   using Point = std::array<double, 3>;
   using HandJoints = std::array<double, 11>;
 
-  HandTeleopNode() : Node("hand_teleop_node"), previous_hand_joints_{} {
+  HandTeleopNode()
+      : Node("hand_teleop_node"), joint_filters_initialized_(false),
+        timestamp_initialized_(false), previous_timestamp_nanoseconds_(0),
+        missed_frame_count_(0) {
     const auto landmarks_topic = declare_parameter<std::string>(
         "landmarks_topic", "/hand/landmarks/filtered");
 
     const auto command_topic = declare_parameter<std::string>(
         "command_topic", "/hand_position_controller/commands");
+
+    joint_process_noise_ =
+        declare_parameter<double>("joint_process_noise", 0.02);
+
+    joint_measurement_noise_ =
+        declare_parameter<double>("joint_measurement_noise", 0.01);
+
+    joint_initial_position_variance_ =
+        declare_parameter<double>("joint_initial_position_variance", 0.10);
+
+    joint_initial_velocity_variance_ =
+        declare_parameter<double>("joint_initial_velocity_variance", 0.10);
+
+    joint_velocity_damping_ =
+        declare_parameter<double>("joint_velocity_damping", 0.85);
+
+    minimum_dt_ = declare_parameter<double>("minimum_dt", 0.001);
+
+    maximum_dt_ = declare_parameter<double>("maximum_dt", 0.20);
+
+    maximum_missed_frames_ =
+        declare_parameter<int>("maximum_missed_frames", 10);
+
+    if (!std::isfinite(joint_process_noise_) ||
+        !std::isfinite(joint_measurement_noise_) ||
+        !std::isfinite(joint_initial_position_variance_) ||
+        !std::isfinite(joint_initial_velocity_variance_) ||
+        !std::isfinite(joint_velocity_damping_) ||
+        !std::isfinite(minimum_dt_) || !std::isfinite(maximum_dt_) ||
+        joint_process_noise_ <= 0.0 || joint_measurement_noise_ <= 0.0 ||
+        joint_initial_position_variance_ <= 0.0 ||
+        joint_initial_velocity_variance_ <= 0.0 ||
+        joint_velocity_damping_ < 0.0 || joint_velocity_damping_ > 1.0 ||
+        minimum_dt_ <= 0.0 || maximum_dt_ < minimum_dt_ ||
+        maximum_missed_frames_ < 0) {
+      throw std::invalid_argument("invalid hand-joint Kalman parameters");
+    }
+
+    joint_filters_.reserve(kJointCount);
+
+    for (std::size_t index = 0U; index < kJointCount; ++index) {
+      joint_filters_.push_back(
+          std::make_unique<
+              robot_state_estimation::ConstantVelocityKalmanFilter>(
+              joint_process_noise_, joint_measurement_noise_,
+              joint_initial_position_variance_,
+              joint_initial_velocity_variance_, joint_velocity_damping_));
+    }
 
     command_publisher_ =
         create_publisher<std_msgs::msg::Float64MultiArray>(command_topic, 10);
@@ -49,14 +102,16 @@ public:
             std::bind(&HandTeleopNode::landmarkCallback, this,
                       std::placeholders::_1));
 
-    RCLCPP_INFO(get_logger(), "Hand teleop ready: %s -> %s",
+    RCLCPP_INFO(get_logger(),
+                "Hand teleop ready with joint Kalman "
+                "filtering: %s -> %s",
                 landmarks_topic.c_str(), command_topic.c_str());
   }
 
 private:
   static constexpr double kPi = 3.14159265358979323846;
 
-  static constexpr double kFilterPreviousWeight = 0.7;
+  static constexpr std::size_t kJointCount = 11U;
 
   static constexpr HandJoints kJointLimits = {
       0.9704,  0.9879,  1.334,   0.79849, 0.79849, 1.334,
@@ -212,9 +267,96 @@ private:
     return mapped;
   }
 
+  void resetJointFilters() {
+    for (auto &filter : joint_filters_) {
+      filter->reset();
+    }
+
+    joint_filters_initialized_ = false;
+    timestamp_initialized_ = false;
+    previous_timestamp_nanoseconds_ = 0;
+    missed_frame_count_ = 0;
+  }
+
+  void handleTrackingLoss() {
+    ++missed_frame_count_;
+
+    if (missed_frame_count_ > maximum_missed_frames_) {
+      resetJointFilters();
+    }
+  }
+
+  static std::int64_t
+  timestampNanoseconds(const builtin_interfaces::msg::Time &stamp) {
+    return (static_cast<std::int64_t>(stamp.sec) * 1000000000LL +
+            static_cast<std::int64_t>(stamp.nanosec));
+  }
+
+  void initializeJointFilters(const HandJoints &mapped,
+                              std::int64_t timestamp_nanoseconds) {
+    for (std::size_t index = 0U; index < mapped.size(); ++index) {
+      joint_filters_[index]->initialize(mapped[index]);
+    }
+
+    joint_filters_initialized_ = true;
+    timestamp_initialized_ = timestamp_nanoseconds > 0;
+    previous_timestamp_nanoseconds_ = timestamp_nanoseconds;
+  }
+
+  void publishJointCommand(const HandJoints &mapped,
+                           std::int64_t timestamp_nanoseconds) {
+    std_msgs::msg::Float64MultiArray command;
+    command.data.resize(mapped.size());
+
+    if (!joint_filters_initialized_) {
+      initializeJointFilters(mapped, timestamp_nanoseconds);
+
+      for (std::size_t index = 0U; index < mapped.size(); ++index) {
+        command.data[index] = mapped[index];
+      }
+
+      command_publisher_->publish(command);
+      return;
+    }
+
+    double dt = 0.10;
+
+    if (timestamp_initialized_ && timestamp_nanoseconds > 0) {
+      const auto elapsed_nanoseconds =
+          timestamp_nanoseconds - previous_timestamp_nanoseconds_;
+
+      const double measured_dt =
+          static_cast<double>(elapsed_nanoseconds) / 1000000000.0;
+
+      if (std::isfinite(measured_dt) && measured_dt > 0.0) {
+        dt = std::clamp(measured_dt, minimum_dt_, maximum_dt_);
+      }
+    }
+
+    for (std::size_t index = 0U; index < mapped.size(); ++index) {
+      const double filtered = joint_filters_[index]->update(mapped[index], dt);
+
+      command.data[index] = std::clamp(filtered, 0.0, kJointLimits[index]);
+    }
+
+    timestamp_initialized_ = timestamp_nanoseconds > 0;
+    previous_timestamp_nanoseconds_ = timestamp_nanoseconds;
+
+    command_publisher_->publish(command);
+  }
+
   void landmarkCallback(
       const robot_vision_msgs::msg::HandLandmarks::SharedPtr message) {
     if (!message->hand_detected) {
+      handleTrackingLoss();
+      return;
+    }
+
+    if (message->landmarks.size() != 63U) {
+      RCLCPP_WARN(get_logger(), "Ignoring landmark array with size %zu",
+                  message->landmarks.size());
+
+      resetJointFilters();
       return;
     }
 
@@ -224,28 +366,36 @@ private:
     for (const double value : hand_data) {
       if (!std::isfinite(value)) {
         RCLCPP_WARN(get_logger(), "Ignoring non-finite landmark data");
+
+        resetJointFilters();
         return;
       }
     }
 
+    missed_frame_count_ = 0;
+
     const HandJoints mapped = mapHandJoints(hand_data);
 
-    std_msgs::msg::Float64MultiArray command;
-    command.data.resize(mapped.size());
-
-    for (std::size_t index = 0U; index < mapped.size(); ++index) {
-      const double filtered =
-          kFilterPreviousWeight * previous_hand_joints_[index] +
-          (1.0 - kFilterPreviousWeight) * mapped[index];
-
-      command.data[index] = filtered;
-      previous_hand_joints_[index] = filtered;
-    }
-
-    command_publisher_->publish(command);
+    publishJointCommand(mapped, timestampNanoseconds(message->header.stamp));
   }
 
-  HandJoints previous_hand_joints_;
+  std::vector<
+      std::unique_ptr<robot_state_estimation::ConstantVelocityKalmanFilter>>
+      joint_filters_;
+
+  double joint_process_noise_;
+  double joint_measurement_noise_;
+  double joint_initial_position_variance_;
+  double joint_initial_velocity_variance_;
+  double joint_velocity_damping_;
+  double minimum_dt_;
+  double maximum_dt_;
+  int maximum_missed_frames_;
+
+  bool joint_filters_initialized_;
+  bool timestamp_initialized_;
+  std::int64_t previous_timestamp_nanoseconds_;
+  int missed_frame_count_;
 
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr
       command_publisher_;
