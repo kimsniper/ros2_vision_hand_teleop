@@ -60,9 +60,12 @@ public:
     enable_depth_control_ =
         declare_parameter<bool>("enable_depth_control", false);
 
-    workspace_y_scale_ = declare_parameter<double>("workspace_y_scale", 0.30);
+    workspace_y_scale_ = declare_parameter<double>("workspace_y_scale", 0.45);
 
-    workspace_z_scale_ = declare_parameter<double>("workspace_z_scale", 0.25);
+    workspace_z_scale_ = declare_parameter<double>("workspace_z_scale", 0.60);
+
+    workspace_z_upward_scale_ =
+        declare_parameter<double>("workspace_z_upward_scale", 0.12);
 
     maximum_x_offset_ = declare_parameter<double>("maximum_x_offset", 0.08);
 
@@ -73,9 +76,13 @@ public:
     maximum_missed_frames_ =
         declare_parameter<int>("maximum_missed_frames", 10);
 
-    maximum_y_offset_ = declare_parameter<double>("maximum_y_offset", 0.10);
+    maximum_y_offset_ = declare_parameter<double>("maximum_y_offset", 0.18);
 
-    maximum_z_offset_ = declare_parameter<double>("maximum_z_offset", 0.10);
+    maximum_z_upward_offset_ =
+        declare_parameter<double>("maximum_z_upward_offset", 0.06);
+
+    maximum_z_downward_offset_ =
+        declare_parameter<double>("maximum_z_downward_offset", 0.30);
 
     minimum_target_change_ =
         declare_parameter<double>("minimum_target_change", 0.005);
@@ -111,8 +118,12 @@ public:
       throw std::invalid_argument("publish_rate_hz must be positive");
     }
 
-    if (workspace_x_scale_ <= 0.0) {
-      throw std::invalid_argument("workspace_x_scale must be positive");
+    if (workspace_x_scale_ <= 0.0 || workspace_y_scale_ <= 0.0 ||
+        workspace_z_scale_ <= 0.0 || workspace_z_upward_scale_ <= 0.0 ||
+        maximum_x_offset_ <= 0.0 || maximum_y_offset_ <= 0.0 ||
+        maximum_z_upward_offset_ <= 0.0 || maximum_z_downward_offset_ <= 0.0) {
+      throw std::invalid_argument("workspace scales and limits "
+                                  "must be positive");
     }
 
     if (maximum_x_offset_ <= 0.0) {
@@ -364,8 +375,12 @@ private:
     const double y_offset = std::clamp(-palm_offset_x * workspace_y_scale_,
                                        -maximum_y_offset_, maximum_y_offset_);
 
-    const double z_offset = std::clamp(-palm_offset_y * workspace_z_scale_,
-                                       -maximum_z_offset_, maximum_z_offset_);
+    const double z_offset =
+        palm_offset_y >= 0.0
+            ? -std::clamp(palm_offset_y * workspace_z_scale_, 0.0,
+                          maximum_z_downward_offset_)
+            : std::clamp(-palm_offset_y * workspace_z_upward_scale_, 0.0,
+                         maximum_z_upward_offset_);
 
     target.pose.position.x = reference_x_ + x_offset;
 
@@ -467,12 +482,14 @@ private:
   bool enable_depth_control_;
   double workspace_y_scale_;
   double workspace_z_scale_;
+  double workspace_z_upward_scale_;
   double maximum_x_offset_;
   double screen_center_x_;
   double screen_center_y_;
   int maximum_missed_frames_;
   double maximum_y_offset_;
-  double maximum_z_offset_;
+  double maximum_z_upward_offset_;
+  double maximum_z_downward_offset_;
   double minimum_target_change_;
   double maximum_orientation_offset_;
   double orientation_deadband_;
