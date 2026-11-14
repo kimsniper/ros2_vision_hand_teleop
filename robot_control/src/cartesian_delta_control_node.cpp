@@ -167,12 +167,40 @@ private:
     std::lock_guard<std::mutex> lock(command_mutex_);
 
     if (isZeroCommand(*message)) {
-      has_latest_cartesian_delta_ = false;
       return;
     }
 
-    latest_cartesian_delta_ = *message;
-    has_latest_cartesian_delta_ = true;
+    if (!has_latest_cartesian_delta_) {
+      latest_cartesian_delta_ = *message;
+      has_latest_cartesian_delta_ = true;
+      return;
+    }
+
+    latest_cartesian_delta_.header = message->header;
+
+    latest_cartesian_delta_.twist.linear.x =
+        clamp(latest_cartesian_delta_.twist.linear.x + message->twist.linear.x,
+              maximum_translation_delta_);
+
+    latest_cartesian_delta_.twist.linear.y =
+        clamp(latest_cartesian_delta_.twist.linear.y + message->twist.linear.y,
+              maximum_translation_delta_);
+
+    latest_cartesian_delta_.twist.linear.z =
+        clamp(latest_cartesian_delta_.twist.linear.z + message->twist.linear.z,
+              maximum_translation_delta_);
+
+    latest_cartesian_delta_.twist.angular.x = clamp(
+        latest_cartesian_delta_.twist.angular.x + message->twist.angular.x,
+        maximum_rotation_delta_);
+
+    latest_cartesian_delta_.twist.angular.y = clamp(
+        latest_cartesian_delta_.twist.angular.y + message->twist.angular.y,
+        maximum_rotation_delta_);
+
+    latest_cartesian_delta_.twist.angular.z = clamp(
+        latest_cartesian_delta_.twist.angular.z + message->twist.angular.z,
+        maximum_rotation_delta_);
   }
 
   void processLatestCartesianDelta() {

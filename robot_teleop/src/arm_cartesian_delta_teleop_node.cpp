@@ -34,22 +34,21 @@ public:
   using Point = std::array<double, 3>;
 
   ArmCartesianDeltaTeleopNode()
-      : Node("arm_cartesian_delta_teleop_node"), latest_palm_center_{0.0, 0.0,
-                                                                     0.0},
-        filtered_cartesian_delta_{0.0, 0.0, 0.0}, latest_depth_velocity_(0.0),
-        has_latest_palm_center_(false), depth_valid_(false) {
+      : Node("arm_cartesian_delta_teleop_node"), previous_palm_center_{0.0, 0.0,
+                                                                       0.0},
+        latest_depth_velocity_(0.0), has_previous_palm_center_(false),
+        depth_valid_(false) {
     const auto state_topic =
         declare_parameter<std::string>("state_topic", "/hand/state");
 
     const auto cartesian_delta_topic = declare_parameter<std::string>(
         "cartesian_delta_topic", "/arm/cartesian_delta");
 
-    const double publish_rate_hz =
-        declare_parameter<double>("publish_rate_hz", 15.0);
+    lateral_scale_ = declare_parameter<double>("lateral_scale", 1.50);
 
-    lateral_gain_ = declare_parameter<double>("lateral_gain", 0.04);
+    vertical_scale_ = declare_parameter<double>("vertical_scale", 1.50);
 
-    vertical_gain_ = declare_parameter<double>("vertical_gain", 0.04);
+    sample_deadzone_ = declare_parameter<double>("sample_deadzone", 0.001);
 
     depth_velocity_scale_ =
         declare_parameter<double>("depth_velocity_scale", 0.15);
@@ -69,18 +68,18 @@ public:
     maximum_cartesian_delta_ =
         declare_parameter<double>("max_cartesian_delta_m", 0.01);
 
-    filter_alpha_ = declare_parameter<double>("alpha", 0.10);
-
-    if (publish_rate_hz <= 0.0) {
-      throw std::invalid_argument("publish_rate_hz must be positive");
-    }
-
     if (depth_velocity_scale_ <= 0.0) {
       throw std::invalid_argument("depth_velocity_scale must be positive");
     }
 
     if (maximum_depth_velocity_ <= 0.0) {
       throw std::invalid_argument("maximum_depth_velocity must be positive");
+    }
+
+    if (lateral_scale_ <= 0.0 || vertical_scale_ <= 0.0 ||
+        sample_deadzone_ < 0.0) {
+      throw std::invalid_argument("sample displacement parameters "
+                                  "are invalid");
     }
 
     cartesian_delta_publisher_ =
@@ -93,10 +92,6 @@ public:
             std::bind(&ArmCartesianDeltaTeleopNode::stateCallback, this,
                       std::placeholders::_1));
 
-    timer_ = create_wall_timer(
-        std::chrono::duration<double>(1.0 / publish_rate_hz),
-        std::bind(&ArmCartesianDeltaTeleopNode::publishCartesianDelta, this));
-
     RCLCPP_INFO(get_logger(),
                 "3D screen-centered Cartesian delta arm teleop ready: "
                 "%s -> %s",
@@ -106,9 +101,8 @@ public:
 private:
   void resetTracking() {
     latest_depth_velocity_ = 0.0;
-    has_latest_palm_center_ = false;
+    has_previous_palm_center_ = false;
     depth_valid_ = false;
-    filtered_cartesian_delta_ = {0.0, 0.0, 0.0};
     publishStop();
   }
 
@@ -124,20 +118,49 @@ private:
         !std::isfinite(message->palm_center.z) ||
         !std::isfinite(message->depth_velocity)) {
       RCLCPP_WARN(get_logger(), "Ignoring non-finite hand state");
+
       resetTracking();
       return;
     }
 
-    latest_palm_center_ = {
-        message->palm_center.x,
-        message->palm_center.y,
-        message->palm_center.z,
-    };
+    const Point current_palm_center = {
+        message->palm_center.x, message->palm_center.y, message->palm_center.z};
 
     latest_depth_velocity_ = message->depth_velocity;
 
-    has_latest_palm_center_ = true;
     depth_valid_ = message->depth_valid;
+
+    if (!has_previous_palm_center_) {
+      previous_palm_center_ = current_palm_center;
+
+      has_previous_palm_center_ = true;
+      publishStop();
+      return;
+    }
+
+    const double hand_delta_x = applyDeadzone(
+        current_palm_center[0] - previous_palm_center_[0], sample_deadzone_);
+
+    const double hand_delta_y = applyDeadzone(
+        current_palm_center[1] - previous_palm_center_[1], sample_deadzone_);
+
+    previous_palm_center_ = current_palm_center;
+
+    const double delta_x =
+        enable_depth_control_ && depth_valid_
+            ? std::clamp(latest_depth_velocity_ * depth_velocity_scale_,
+                         -maximum_depth_velocity_, maximum_depth_velocity_)
+            : 0.0;
+
+    const double delta_y =
+        std::clamp(-hand_delta_x * lateral_scale_, -maximum_cartesian_delta_,
+                   maximum_cartesian_delta_);
+
+    const double delta_z =
+        std::clamp(-hand_delta_y * vertical_scale_, -maximum_cartesian_delta_,
+                   maximum_cartesian_delta_);
+
+    publishCartesianDelta(delta_x, delta_y, delta_z);
   }
 
   static double applyDeadzone(double value, double deadzone) {
@@ -148,21 +171,6 @@ private:
     const double sign = value < 0.0 ? -1.0 : 1.0;
 
     return sign * (std::abs(value) - deadzone) / (0.5 - deadzone);
-  }
-
-  double filterValue(std::size_t index, double value) {
-    value =
-        std::clamp(value, -maximum_cartesian_delta_, maximum_cartesian_delta_);
-
-    double filtered = filter_alpha_ * value +
-                      (1.0 - filter_alpha_) * filtered_cartesian_delta_[index];
-
-    if (value == 0.0 && std::abs(filtered) < 0.0005) {
-      filtered = 0.0;
-    }
-
-    filtered_cartesian_delta_[index] = filtered;
-    return filtered;
   }
 
   void publishStop() {
@@ -182,32 +190,7 @@ private:
     cartesian_delta_publisher_->publish(command);
   }
 
-  void publishCartesianDelta() {
-    if (!has_latest_palm_center_) {
-      publishStop();
-      return;
-    }
-
-    const double screen_error_x = latest_palm_center_[0] - screen_center_x_;
-
-    const double screen_error_y = latest_palm_center_[1] - screen_center_y_;
-
-    const double normalized_x = applyDeadzone(screen_error_x, screen_deadzone_);
-
-    const double normalized_y = applyDeadzone(screen_error_y, screen_deadzone_);
-
-    const double depth_velocity =
-        enable_depth_control_ && depth_valid_
-            ? std::clamp(latest_depth_velocity_ * depth_velocity_scale_,
-                         -maximum_depth_velocity_, maximum_depth_velocity_)
-            : 0.0;
-
-    const double delta_x = filterValue(0U, depth_velocity);
-
-    const double delta_y = filterValue(1U, -normalized_x * lateral_gain_);
-
-    const double delta_z = filterValue(2U, -normalized_y * vertical_gain_);
-
+  void publishCartesianDelta(double delta_x, double delta_y, double delta_z) {
     geometry_msgs::msg::TwistStamped command;
 
     command.header.stamp = now();
@@ -224,8 +207,10 @@ private:
     cartesian_delta_publisher_->publish(command);
   }
 
-  double lateral_gain_;
-  double vertical_gain_;
+  double lateral_scale_;
+  double vertical_scale_;
+  double sample_deadzone_;
+
   double depth_velocity_scale_;
   bool enable_depth_control_;
   double maximum_depth_velocity_;
@@ -233,13 +218,11 @@ private:
   double screen_center_y_;
   double screen_deadzone_;
   double maximum_cartesian_delta_;
-  double filter_alpha_;
 
-  Point latest_palm_center_;
-  Point filtered_cartesian_delta_;
+  Point previous_palm_center_;
   double latest_depth_velocity_;
 
-  bool has_latest_palm_center_;
+  bool has_previous_palm_center_;
   bool depth_valid_;
 
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr
@@ -247,8 +230,6 @@ private:
 
   rclcpp::Subscription<robot_vision_msgs::msg::HandState>::SharedPtr
       state_subscription_;
-
-  rclcpp::TimerBase::SharedPtr timer_;
 };
 
 int main(int argc, char **argv) {
