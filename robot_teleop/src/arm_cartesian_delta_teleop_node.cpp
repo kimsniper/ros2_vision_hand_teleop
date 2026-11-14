@@ -37,7 +37,7 @@ public:
       : Node("arm_cartesian_delta_teleop_node"), previous_palm_center_{0.0, 0.0,
                                                                        0.0},
         latest_depth_velocity_(0.0), has_previous_palm_center_(false),
-        depth_valid_(false) {
+        depth_mode_active_(false), depth_valid_(false) {
     const auto state_topic =
         declare_parameter<std::string>("state_topic", "/hand/state");
 
@@ -48,16 +48,31 @@ public:
 
     vertical_scale_ = declare_parameter<double>("vertical_scale", 1.50);
 
-    sample_deadzone_ = declare_parameter<double>("sample_deadzone", 0.001);
+    sample_deadzone_ = declare_parameter<double>("sample_deadzone", 0.002140);
 
-    depth_velocity_scale_ =
-        declare_parameter<double>("depth_velocity_scale", 0.15);
+    depth_mode_enter_threshold_ =
+        declare_parameter<double>("depth_mode_enter_threshold", 0.014039);
+
+    depth_mode_exit_threshold_ =
+        declare_parameter<double>("depth_mode_exit_threshold", 0.010932);
+
+    depth_mode_planar_deadzone_ =
+        declare_parameter<double>("depth_mode_planar_deadzone", 0.006000);
+
+    depth_forward_scale_ =
+        declare_parameter<double>("depth_forward_scale", 0.10);
+
+    depth_backward_scale_ =
+        declare_parameter<double>("depth_backward_scale", 0.225);
+
+    maximum_depth_forward_delta_ =
+        declare_parameter<double>("maximum_depth_forward_delta", 0.003);
+
+    maximum_depth_backward_delta_ =
+        declare_parameter<double>("maximum_depth_backward_delta", 0.007);
 
     enable_depth_control_ =
-        declare_parameter<bool>("enable_depth_control", false);
-
-    maximum_depth_velocity_ =
-        declare_parameter<double>("maximum_depth_velocity", 0.05);
+        declare_parameter<bool>("enable_depth_control", true);
 
     screen_center_x_ = declare_parameter<double>("screen_center_x", 0.50);
 
@@ -68,18 +83,23 @@ public:
     maximum_cartesian_delta_ =
         declare_parameter<double>("max_cartesian_delta_m", 0.01);
 
-    if (depth_velocity_scale_ <= 0.0) {
-      throw std::invalid_argument("depth_velocity_scale must be positive");
-    }
-
-    if (maximum_depth_velocity_ <= 0.0) {
-      throw std::invalid_argument("maximum_depth_velocity must be positive");
+    if (depth_forward_scale_ <= 0.0 || depth_backward_scale_ <= 0.0 ||
+        maximum_depth_forward_delta_ <= 0.0 ||
+        maximum_depth_backward_delta_ <= 0.0) {
+      throw std::invalid_argument("depth scales and limits must be positive");
     }
 
     if (lateral_scale_ <= 0.0 || vertical_scale_ <= 0.0 ||
         sample_deadzone_ < 0.0) {
-      throw std::invalid_argument("sample displacement parameters "
-                                  "are invalid");
+      throw std::invalid_argument("sample displacement parameters are invalid");
+    }
+
+    if (depth_mode_enter_threshold_ <= 0.0 ||
+        depth_mode_exit_threshold_ <= 0.0 ||
+        depth_mode_exit_threshold_ >= depth_mode_enter_threshold_ ||
+        depth_mode_planar_deadzone_ < sample_deadzone_) {
+      throw std::invalid_argument(
+          "depth-mode hysteresis parameters are invalid");
     }
 
     cartesian_delta_publisher_ =
@@ -102,6 +122,7 @@ private:
   void resetTracking() {
     latest_depth_velocity_ = 0.0;
     has_previous_palm_center_ = false;
+    depth_mode_active_ = false;
     depth_valid_ = false;
     publishStop();
   }
@@ -138,27 +159,57 @@ private:
       return;
     }
 
-    const double hand_delta_x = applyDeadzone(
-        current_palm_center[0] - previous_palm_center_[0], sample_deadzone_);
+    const double raw_hand_delta_x =
+        current_palm_center[0] - previous_palm_center_[0];
 
-    const double hand_delta_y = applyDeadzone(
-        current_palm_center[1] - previous_palm_center_[1], sample_deadzone_);
+    const double raw_hand_delta_y =
+        current_palm_center[1] - previous_palm_center_[1];
 
     previous_palm_center_ = current_palm_center;
 
-    const double delta_x =
-        enable_depth_control_ && depth_valid_
-            ? std::clamp(latest_depth_velocity_ * depth_velocity_scale_,
-                         -maximum_depth_velocity_, maximum_depth_velocity_)
-            : 0.0;
+    const double planar_magnitude =
+        std::max(std::abs(raw_hand_delta_x), std::abs(raw_hand_delta_y));
 
-    const double delta_y =
-        std::clamp(-hand_delta_x * lateral_scale_, -maximum_cartesian_delta_,
-                   maximum_cartesian_delta_);
+    const bool planar_override =
+        planar_magnitude >= depth_mode_planar_deadzone_;
 
-    const double delta_z =
-        std::clamp(-hand_delta_y * vertical_scale_, -maximum_cartesian_delta_,
-                   maximum_cartesian_delta_);
+    const double depth_speed =
+        depth_valid_ ? std::abs(latest_depth_velocity_) : 0.0;
+
+    if (planar_override) {
+      depth_mode_active_ = false;
+    } else if (depth_mode_active_) {
+      if (depth_speed <= depth_mode_exit_threshold_) {
+        depth_mode_active_ = false;
+      }
+    } else if (depth_speed >= depth_mode_enter_threshold_) {
+      depth_mode_active_ = true;
+    }
+
+    double delta_x = 0.0;
+    double delta_y = 0.0;
+    double delta_z = 0.0;
+
+    if (planar_override || !depth_mode_active_) {
+      const double hand_delta_x =
+          applyDeadzone(raw_hand_delta_x, sample_deadzone_);
+
+      const double hand_delta_y =
+          applyDeadzone(raw_hand_delta_y, sample_deadzone_);
+
+      delta_y = std::clamp(-hand_delta_x * lateral_scale_,
+                           -maximum_cartesian_delta_, maximum_cartesian_delta_);
+
+      delta_z = std::clamp(-hand_delta_y * vertical_scale_,
+                           -maximum_cartesian_delta_, maximum_cartesian_delta_);
+    } else if (enable_depth_control_ && depth_valid_) {
+      delta_x =
+          latest_depth_velocity_ >= 0.0
+              ? std::clamp(latest_depth_velocity_ * depth_forward_scale_, 0.0,
+                           maximum_depth_forward_delta_)
+              : -std::clamp(-latest_depth_velocity_ * depth_backward_scale_,
+                            0.0, maximum_depth_backward_delta_);
+    }
 
     publishCartesianDelta(delta_x, delta_y, delta_z);
   }
@@ -210,10 +261,15 @@ private:
   double lateral_scale_;
   double vertical_scale_;
   double sample_deadzone_;
+  double depth_mode_enter_threshold_;
+  double depth_mode_exit_threshold_;
+  double depth_mode_planar_deadzone_;
 
-  double depth_velocity_scale_;
+  double depth_forward_scale_;
+  double depth_backward_scale_;
+  double maximum_depth_forward_delta_;
+  double maximum_depth_backward_delta_;
   bool enable_depth_control_;
-  double maximum_depth_velocity_;
   double screen_center_x_;
   double screen_center_y_;
   double screen_deadzone_;
@@ -223,6 +279,7 @@ private:
   double latest_depth_velocity_;
 
   bool has_previous_palm_center_;
+  bool depth_mode_active_;
   bool depth_valid_;
 
   rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr

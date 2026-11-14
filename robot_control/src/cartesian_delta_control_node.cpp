@@ -233,7 +233,8 @@ private:
     }
 
     const std::array<double, 3> linear = {
-        0.0, clamp(command.twist.linear.y, maximum_translation_delta_),
+        clamp(command.twist.linear.x, maximum_translation_delta_),
+        clamp(command.twist.linear.y, maximum_translation_delta_),
         clamp(command.twist.linear.z, maximum_translation_delta_)};
 
     const std::array<double, 3> angular = {
@@ -261,7 +262,7 @@ private:
     target.header.stamp = now();
     target.header.frame_id = base_frame_;
 
-    target.pose.position.x = transform.transform.translation.x;
+    target.pose.position.x = transform.transform.translation.x + linear[0];
 
     target.pose.position.y = transform.transform.translation.y + linear[1];
 
