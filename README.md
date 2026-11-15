@@ -11,7 +11,9 @@ The application supports independent finger flexion and lateral motion, configur
 - Independent finger flexion control
 - Independent index, ring, and pinky lateral control
 - Configurable Cartesian and Cartesian-delta arm teleoperation
-- Screen-centered Cartesian-delta motion
+- Cartesian X/Y/Z control with asymmetric depth response
+- Frame-to-frame Cartesian-delta motion with depth/planar arbitration
+- Kalman-filtered landmark, depth, and humanoid-hand joint control
 - Calibrated Cartesian Y/Z positioning
 - MoveIt 2 inverse kinematics
 - `ros2_control` trajectory and hand position controllers
@@ -90,17 +92,183 @@ rosdep install --from-paths src --ignore-src -r -y
 
 ### Vision
 
-`robot_vision` captures webcam frames, runs MediaPipe hand tracking, and publishes 21 landmarks for each hand.
+`robot_vision` captures webcam frames, runs MediaPipe hand tracking, and publishes 21 landmarks for the right hand.
 
 ```text
 /hand/landmarks
 ```
 
-The message contains 126 `float64` values:
+### Hand State Estimation
+
+MediaPipe landmark measurements can contain frame-to-frame jitter, irregular timing, and short tracking interruptions. The `robot_state_estimation` package provides a dedicated `state_estimator_node` between vision and teleoperation so robot commands are generated from an estimated hand state instead of directly from raw landmarks.
+
+```text
+Camera frame
+    |
+MediaPipe right-hand landmarks
+    |  /hand/landmarks
+state_estimator_node
+    |  /hand/landmarks/filtered
+Cartesian, Cartesian-delta, and hand teleoperation
+```
+
+The estimator runs 63 independent constant-velocity Kalman filters, one for every `x`, `y`, and `z` coordinate across the 21 MediaPipe hand landmarks. Each coordinate uses the state:
+
+```text
+state = [position, velocity]
+measurement = position
+```
+
+The measurement timestamp determines the update interval `dt`. The estimator preserves the input timestamp and `frame_id` in the filtered output.
+
+Estimator behavior:
+
+- The first valid detection initializes all 63 filters directly from the measured landmarks.
+- Valid timestamped measurements perform Kalman prediction and correction for every coordinate.
+- A missing, non-increasing, or excessively delayed timestamp reinitializes the filters from the current measurement.
+- `hand_detected=false` immediately resets all filters and publishes 63 zeros with detection disabled.
+- The first valid measurement after tracking loss initializes a new estimate without carrying stale velocity forward.
+
+This immediate reset behavior preserves the teleoperation safety path: Cartesian-delta control receives a zero stop command, while hand teleoperation suppresses new commands until the right hand is detected again.
+
+#### Kalman Filter Parameters
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `process_noise` | `0.1` | Allows estimated landmark velocity to change |
+| `measurement_noise` | `0.01` | Controls trust in MediaPipe measurements |
+| `initial_position_variance` | `1.0` | Initial landmark-position uncertainty |
+| `initial_velocity_variance` | `1.0` | Initial landmark-velocity uncertainty |
+| `minimum_dt` | `0.001 s` | Prevents updates with an excessively small interval |
+| `maximum_dt` | `0.5 s` | Reinitializes after stale or delayed measurements |
+
+Higher `measurement_noise` produces smoother estimates but can introduce more motion lag. Higher `process_noise` follows rapid hand motion more closely but can pass more measurement jitter. The current values are initial operating defaults and should be tuned using measured raw-versus-filtered jitter and motion latency for the target camera and lighting conditions.
+
+The raw and filtered landmark streams can be inspected with:
+
+```bash
+ros2 topic echo /hand/landmarks
+ros2 topic echo /hand/landmarks/filtered
+ros2 topic hz /hand/landmarks
+ros2 topic hz /hand/landmarks/filtered
+```
+
+The timestamped message contains 63 `float64` landmark values and an explicit detection flag:
 
 ```text
 right hand: 21 landmarks × x/y/z = 63 values
-left hand:  21 landmarks × x/y/z = 63 values
+```
+
+#### Depth Estimation
+
+The state estimator derives camera-depth motion from apparent palm scale.
+MediaPipe landmark `z` is not used directly as robot depth because it is
+relative to the hand geometry and is not a stable metric camera distance.
+
+`PalmStateExtractor` calculates:
+
+- palm center from landmarks `0`, `5`, `9`, `13`, and `17`;
+- robust palm scale from four palm distances;
+- normalized palm normal;
+- palm-facing depth validity.
+
+The depth measurement is relative to the first valid palm scale:
+
+```text
+relative_depth = log(current_palm_scale / reference_palm_scale)
+```
+
+Positive relative depth means the hand moved toward the camera.
+Negative relative depth means it moved away.
+
+```text
+MediaPipe landmarks
+    |
+
+63 coordinate Kalman filters
+    |
+
+PalmStateExtractor
+    |-- palm center
+    |-- palm scale
+    |-- palm normal
+    `-- depth validity
+    |
+
+Relative-depth Kalman filter
+    |-- relative depth
+    `-- depth velocity
+    |
+
+/hand/state
+    |-- primary Cartesian pose control
+    `-- secondary Cartesian-delta control
+```
+
+The estimator publishes `robot_vision_msgs/msg/HandState` on
+`/hand/state`. It contains filtered landmarks, hand detection, palm center,
+palm scale, relative depth, depth velocity, and depth validity.
+
+Depth is disabled when the palm is strongly edge-on. Detection loss,
+invalid geometry, or stale timestamps reset the depth reference and filter.
+
+##### State-estimation parameters
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `depth_scale_deadband` | `0.03` | Ignores palm-scale changes of 3% or less |
+| `minimum_palm_normal_z` | `0.70` | Rejects strongly edge-on palm orientations |
+| `process_noise` | `0.1` | Allows estimated position and velocity to change |
+| `measurement_noise` | `0.01` | Controls trust in measurements |
+| `minimum_dt` | `0.001 s` | Protects against very small update intervals |
+| `maximum_dt` | `0.5 s` | Reinitializes after stale measurements |
+
+##### Primary Cartesian pose control
+
+```text
+robot x = reference x + asymmetric relative-depth mapping
+robot y = reference y - horizontal palm offset * workspace_y_scale
+robot z = reference z + asymmetric vertical palm-offset mapping
+```
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `workspace_x_forward_scale` | `0.20` | Converts motion toward the camera to positive robot X displacement |
+| `workspace_x_backward_scale` | `0.45` | Converts motion away from the camera to negative robot X displacement |
+| `maximum_x_forward_offset` | `0.04 m` | Limits forward robot X displacement |
+| `maximum_x_backward_offset` | `0.14 m` | Limits backward robot X displacement |
+| `reacquisition_samples` | `5` | Valid states required for calibration |
+
+Initial calibration and reacquisition average five consecutive valid palm
+centers. No Cartesian target is published during this calibration window.
+Detection loss or invalid depth resets the pending calibration.
+
+##### Secondary Cartesian-delta control
+
+```text
+depth motion  -> bounded robot X increment
+planar motion -> bounded robot Y/Z increment
+no motion     -> zero increment
+```
+
+| Parameter | Default | Purpose |
+|---|---:|---|
+| `depth_forward_scale` | `0.10` | Converts motion toward the camera to positive robot X increments |
+| `depth_backward_scale` | `0.225` | Converts motion away from the camera to negative robot X increments |
+| `maximum_depth_forward_delta` | `0.003 m` | Limits each forward X increment |
+| `maximum_depth_backward_delta` | `0.007 m` | Limits each backward X increment |
+| `sample_deadzone` | `0.002140` | Rejects small frame-to-frame planar displacement |
+| `depth_mode_enter_threshold` | `0.014039` | Enters depth-dominant motion |
+| `depth_mode_exit_threshold` | `0.010932` | Exits depth-dominant motion |
+| `depth_mode_planar_deadzone` | `0.006000` | Separates deliberate planar motion from depth coupling |
+
+Invalid depth or tracking loss immediately produces a zero stop.
+
+Inspect the estimated state with:
+
+```bash
+ros2 topic echo /hand/state
+ros2 topic hz /hand/state
 ```
 
 ### Hand Teleoperation
@@ -123,6 +291,11 @@ The hand controller commands:
 
 The middle finger remains laterally fixed because the Schunk model does not provide a middle-finger lateral degree of freedom.
 
+The 11 mapped humanoid-hand joint commands use independent constant-velocity
+Kalman filters. The previous exponential moving-average command filter has
+been removed. Short tracking interruptions preserve joint-filter state for up
+to 10 missed frames; longer interruptions reset the joint filters.
+
 ### Arm Teleoperation
 
 The application provides two selectable arm control modes.
@@ -133,7 +306,7 @@ The application provides two selectable arm control modes.
 arm_control_mode:=cartesian
 ```
 
-The first stable palm detection becomes the screen reference. Palm motion is mapped to absolute robot Y/Z targets while robot X and end-effector orientation remain fixed.
+The first stable palm detection becomes the screen reference. Palm motion is mapped to bounded absolute robot X/Y/Z targets. X uses asymmetric relative-depth mapping, Y/Z use calibrated palm offsets, and the configured tool orientation remains fixed for position-only MoveIt IK.
 
 ```text
 /arm/cartesian_target
@@ -165,7 +338,7 @@ Nodes:
 /cartesian_delta_control_node
 ```
 
-Robot X remains fixed in both modes.
+Both modes support robot X/Y/Z translation.
 
 ## Running the Application
 
@@ -201,7 +374,9 @@ cartesian_delta
 
 | Topic | Type | Description |
 |---|---|---|
-| `/hand/landmarks` | `std_msgs/msg/Float64MultiArray` | MediaPipe landmarks for the right and left hands |
+| `/hand/landmarks` | `robot_vision_msgs/msg/HandLandmarks` | Raw timestamped MediaPipe landmarks for the right hand |
+| `/hand/landmarks/filtered` | `robot_vision_msgs/msg/HandLandmarks` | Kalman-filtered landmarks used by teleoperation |
+| `/hand/state` | `robot_vision_msgs/msg/HandState` | Estimated palm geometry, relative depth, and depth velocity |
 | `/arm/cartesian_target` | `geometry_msgs/msg/PoseStamped` | Absolute Cartesian arm target |
 | `/arm/cartesian_delta` | `geometry_msgs/msg/TwistStamped` | Cartesian arm increment |
 | `/arm_trajectory_controller/follow_joint_trajectory` | `control_msgs/action/FollowJointTrajectory` | Arm trajectory action |
@@ -214,20 +389,23 @@ cartesian_delta
 ### Cartesian
 
 - Calibrates from the first stable palm detection
+- Maps relative palm depth to robot X with asymmetric forward/backward scaling
 - Maps screen X to robot Y
 - Maps screen Y to robot Z
-- Keeps robot X fixed
 - Keeps the configured end-effector orientation fixed
 - Publishes only when the target changes beyond the configured threshold
 
 ### Cartesian Delta
 
-- Uses the screen center as zero motion
-- Maps screen X displacement to robot Y increments
-- Maps screen Y displacement to robot Z increments
-- Keeps robot X fixed
-- Retains only the latest waiting command
-- Cancels retained motion when the palm returns to the center
+- Uses frame-to-frame filtered palm displacement for robot Y/Z increments
+- Uses filtered depth velocity for asymmetric robot X increments
+- Stops when the hand stops; returning to screen center is not required
+- Maps frame-to-frame screen X displacement to robot Y increments
+- Maps frame-to-frame screen Y displacement to robot Z increments
+- Uses calibrated hysteresis to separate depth and planar motion
+- Prevents depth motion from commanding Y/Z and planar motion from commanding X
+- Accumulates pending nonzero displacement while the controller is busy
+- Preserves the current tool orientation during translation
 - Limits each accepted Cartesian increment for smoother motion
 
 ## Working Demo
